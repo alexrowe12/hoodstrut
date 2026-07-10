@@ -648,15 +648,56 @@ The file-based storage is causing issues at scale. Migrate to SQLite.
 
 ---
 
+## OTEL-Based Metrics Extraction
+
+Claude Code supports OpenTelemetry (OTEL) for observability. We leverage this to extract precise token metrics without parsing fragile CLI output.
+
+### Configuration
+
+Set these env vars when invoking Claude Code inside the container:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=file:///workspace/.otel
+# Or use a file-based exporter
+OTEL_TRACES_EXPORTER=otlp
+OTEL_METRICS_EXPORTER=otlp
+```
+
+### Log Storage Structure
+
+```
+otel_logs/
+├── aggressive-coder/
+│   ├── 2025-01-15T10-30-00Z/
+│   │   ├── traces.json
+│   │   └── metrics.json
+│   └── 2025-01-15T11-45-00Z/
+│       └── ...
+└── conservative-coder/
+    └── ...
+```
+
+### Metrics Extraction
+
+Parse OTEL spans to extract:
+- **Token counts**: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`
+- **Timing**: span durations for each API call
+- **Model info**: which model was actually used
+- **Turn count**: number of conversation turns
+
+The extraction logic (Phase 4) can be deterministic JSON parsing since OTEL exports structured data.
+
+---
+
 ## Docker Execution Flow
 
-1. **Prepare**: Copy local repo into temp directory
+1. **Prepare**: Copy local repo into temp directory (public URLs via git clone, local paths via copy)
 2. **Build**: Create Docker image with Claude Code installed
-3. **Configure**: Inject profile settings (system prompt, MCP, skills)
-4. **Execute**: Run Claude Code with task prompt inside container
-5. **Capture**: Stream and save all output, token metrics
-6. **Verify**: Run success_command or AI judge
-7. **Cleanup**: Remove container, preserve results
+3. **Configure**: Inject profile settings (system prompt, MCP, skills, OTEL env vars)
+4. **Execute**: Run Claude Code in single-shot `--print` mode with task prompt
+5. **Capture**: Stream stdout/stderr to files, collect OTEL logs
+6. **Verify**: Run success_command in same container
+7. **Cleanup**: Remove container, copy OTEL logs to `otel_logs/<profile>/<timestamp>/`, preserve results
 
 ### Dockerfile.runner (Simplified)
 
@@ -683,42 +724,58 @@ ENTRYPOINT ["/run-task.sh"]
 
 ## Development Phases
 
-### Phase 1: Foundation
-- [ ] Project setup (TypeScript, ESLint, testing)
-- [ ] Profile schema and parser
-- [ ] Task schema and parser
-- [ ] Basic CLI structure with Commander.js
+### Phase 1: Foundation ✅
+- [x] Project setup (TypeScript, ESLint, testing)
+- [x] Profile schema and parser
+- [x] Task schema and parser
+- [x] Basic CLI structure with Commander.js
 
-### Phase 2: Profile Scanner
-- [ ] Claude Code config detection (`~/.claude/` structure)
-- [ ] Settings parser (`settings.json`, `settings.local.json`)
-- [ ] MCP server config parser
-- [ ] CLAUDE.md / system prompt extraction
-- [ ] Custom commands/skills discovery
-- [ ] Environment variable detection (reference, not capture)
-- [ ] Profile YAML generation from scanned data
-- [ ] `hoodstrut profile scan` command
+### Phase 2: Profile Scanner ✅
+- [x] Claude Code config detection (`~/.claude/` structure)
+- [x] Settings parser (`settings.json`, `settings.local.json`)
+- [x] MCP server config parser
+- [x] CLAUDE.md / system prompt extraction
+- [x] Custom commands/skills discovery
+- [x] Environment variable detection (reference, not capture)
+- [x] Profile YAML generation from scanned data
+- [x] `hoodstrut profile scan` command
 
 ### Phase 3: Docker Integration
 - [ ] Docker executor (build, run, cleanup)
-- [ ] Repo copying and isolation
-- [ ] Claude Code invocation inside container
-- [ ] Output capture and streaming
+- [ ] Repo copying and isolation (public repos + local paths only)
+- [ ] Claude Code invocation inside container (single-shot `--print` mode)
+- [ ] Profile config injection (CLAUDE.md, settings, MCP servers)
+- [ ] Output capture and streaming (stdout, stderr, conversation)
+- [ ] Success command execution (runs in same container after Claude Code)
+- [ ] API key passed via `ANTHROPIC_API_KEY` env var from host
 
-### Phase 4: Metrics & Results
-- [ ] Token counting from Claude Code output
-- [ ] Cost calculation
-- [ ] Timing instrumentation
-- [ ] Success determination (command, pattern, AI judge)
-- [ ] JSON result output
+### Phase 4: OTEL Metrics Extraction
+- [ ] Configure Claude Code OTEL env vars to output telemetry
+- [ ] Capture OTEL logs to `otel_logs/<profile-name>/<timestamp>/`
+- [ ] Parse OTEL spans for token breakdown (input, output, cache hits)
+- [ ] Extract timing metrics from spans
+- [ ] Cost calculation based on model + token counts
+- [ ] Integrate metrics into run results JSON
 
-### Phase 5: Scoring & Reporting
+### Phase 5: Success Determination & Results
+- [ ] Success determination (command exit code, pattern matching, AI judge)
+- [ ] JSON result output with full metrics
+- [ ] File change tracking (modified, created, deleted)
+- [ ] Run result persistence to `results/` directory
+
+### Phase 6: Scoring & Reporting
 - [ ] Scoring algorithm implementation
 - [ ] Markdown report generation
 - [ ] Comparison reports
 - [ ] Result aggregation for benchmarks
 
-### Phase 6: Example Content & Polish
+### Phase 7: Parallel Execution & Benchmarks
+- [ ] Concurrent container execution (`--parallel N`)
+- [ ] Resource management and container pooling
+- [ ] Benchmark orchestration (multiple profiles × multiple tasks)
+- [ ] Aggregated benchmark results
+
+### Phase 8: Example Content & Polish
 - [ ] Example profiles (including one scanned from real setup)
 - [ ] Example tasks
 - [ ] Example todo-app repository
@@ -755,8 +812,8 @@ hoodstrut run --profile my-setup --task fix-todo-persistence
 
 1. **Multi-Tool Support**: Add Codex CLI, Copilot CLI, Gemini CLI, Aider
 2. **Web Dashboard**: Visualize results, compare runs, track trends
-3. **Parallel Execution**: Run multiple tasks concurrently
-4. **CI Integration**: GitHub Actions, GitLab CI support
+3. **CI Integration**: GitHub Actions, GitLab CI support
+4. **Private Repo Support**: Authentication for private Git repositories
 5. **Task Library**: Community-contributed task collections
 6. **Leaderboard**: Optional public scoring/comparison
 7. **Custom Judges**: Pluggable evaluation criteria

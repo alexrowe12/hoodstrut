@@ -1,0 +1,106 @@
+import { writeFile, mkdir, cp } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { Profile } from '../core/types.js';
+
+export async function injectConfig(profile: Profile, workspaceDir: string): Promise<void> {
+  await Promise.all([
+    injectSystemPrompt(profile, workspaceDir),
+    injectSettings(profile, workspaceDir),
+    injectMcpServers(profile, workspaceDir),
+    injectSkills(profile, workspaceDir),
+  ]);
+}
+
+async function injectSystemPrompt(profile: Profile, workspaceDir: string): Promise<void> {
+  if (!profile.system_prompt) return;
+
+  const claudeMdPath = join(workspaceDir, 'CLAUDE.md');
+  await writeFile(claudeMdPath, profile.system_prompt, 'utf-8');
+}
+
+async function injectSettings(profile: Profile, workspaceDir: string): Promise<void> {
+  const settingsDir = join(workspaceDir, '.claude');
+  await mkdir(settingsDir, { recursive: true });
+
+  const settings: Record<string, unknown> = {};
+
+  if (profile.model) {
+    settings.model = profile.model;
+  }
+
+  if (profile.effort) {
+    settings.effortLevel = profile.effort;
+  }
+
+  if (profile.settings?.max_turns) {
+    settings.maxTurns = profile.settings.max_turns;
+  }
+
+  if (profile.settings?.allowed_tools) {
+    settings.allowedTools = profile.settings.allowed_tools;
+  }
+
+  const settingsPath = join(settingsDir, 'settings.local.json');
+  await writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+}
+
+async function injectMcpServers(profile: Profile, workspaceDir: string): Promise<void> {
+  if (!profile.mcp_servers?.length) return;
+
+  const mcpConfig: Record<string, unknown> = {
+    mcpServers: {},
+  };
+
+  for (const server of profile.mcp_servers) {
+    (mcpConfig.mcpServers as Record<string, unknown>)[server.name] = {
+      command: server.command,
+      args: server.args || [],
+      env: server.env || {},
+    };
+  }
+
+  const mcpPath = join(workspaceDir, '.mcp.json');
+  await writeFile(mcpPath, JSON.stringify(mcpConfig, null, 2), 'utf-8');
+}
+
+async function injectSkills(profile: Profile, workspaceDir: string): Promise<void> {
+  if (!profile.skills?.length) return;
+
+  const skillsDir = join(workspaceDir, '.claude', 'skills');
+  await mkdir(skillsDir, { recursive: true });
+
+  for (const skill of profile.skills) {
+    if (!skill.source) continue;
+
+    const skillDir = join(skillsDir, skill.name);
+    await mkdir(skillDir, { recursive: true });
+
+    try {
+      await cp(skill.source, join(skillDir, 'SKILL.md'));
+    } catch {
+      // Skip if skill source doesn't exist
+    }
+  }
+}
+
+export function buildEnvVars(profile: Profile, otelDir: string): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  if (process.env.ANTHROPIC_API_KEY) {
+    env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+  }
+
+  if (profile.model) {
+    env.ANTHROPIC_MODEL = profile.model;
+  }
+
+  env.OTEL_EXPORTER_OTLP_ENDPOINT = `file://${otelDir}`;
+  env.OTEL_TRACES_EXPORTER = 'otlp';
+  env.OTEL_METRICS_EXPORTER = 'otlp';
+
+  if (profile.settings?.env) {
+    Object.assign(env, profile.settings.env);
+  }
+
+  return env;
+}

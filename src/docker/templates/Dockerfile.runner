@@ -1,0 +1,26 @@
+FROM node:20-slim
+
+# Install Claude Code
+RUN npm install -g @anthropic-ai/claude-code
+
+# Install common dev tools and jq for script JSON parsing
+RUN apt-get update && apt-get install -y \
+    git \
+    python3 \
+    make \
+    gcc \
+    g++ \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Configure git for any operations that might need it
+RUN git config --global user.email "hoodstrut@localhost" && \
+    git config --global user.name "hoodstrut"
+
+WORKDIR /workspace
+
+# Copy entrypoint script
+COPY scripts/run-task.sh /run-task.sh
+RUN chmod +x /run-task.sh
+
+ENTRYPOINT ["/run-task.sh"]
