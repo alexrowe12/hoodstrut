@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Bash(echo:*)",
+      "Bash(printenv:*)",
+      "Bash(npm list:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(hash -r)",
+      "Bash(claude --version)"
     ]
   }
 }
