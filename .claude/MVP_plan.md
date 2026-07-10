@@ -7,11 +7,14 @@
 There's no consistent, repeatable technology for measuring how different model setups burn tokens. Existing benchmarks are convoluted, unclear in their setup, and not customizable to a user's specific needs.
 
 **hoodstrut** solves this by providing:
+- **Auto-scanning of existing setups**: Point at your `~/.claude` folder and instantly create a testable profile
 - Hotswappable "profiles" with configurable model, system prompt, effort level, MCP servers, and skills
 - Isolated Docker execution for reproducible results
 - Realistic task definitions (like Jira tickets, not synthetic benchmarks)
 - Token/cost tracking with a scoring system for competitive benchmarking
 - Easy bring-your-own-tasks against your own repositories
+
+**Key differentiator**: Unlike other benchmarking tools, hoodstrut lets you test YOUR actual setup—not hypothetical configurations. Scan your real Claude Code config, run it against tasks, and see exactly how it performs.
 
 ---
 
@@ -22,13 +25,14 @@ There's no consistent, repeatable technology for measuring how different model s
 - **Interface**: CLI only (TypeScript/Node.js)
 - **Isolation**: Docker containers
 - **Profiles**: Full configuration (model, system prompt, effort, MCP, skills)
+- **Profile Scanning**: Auto-detect and import user's existing Claude Code setup
 - **Tasks**: Markdown files mimicking Jira tickets
 - **Metrics**: Tokens, success/fail, time, cost, rudimentary score
 - **Output**: JSON results + Markdown summary reports
 - **Example Content**: Sample tasks + toy repository for immediate testing
 
 ### Out of Scope (Future)
-- Support for Codex CLI, Copilot CLI, Gemini CLI, Aider
+- Support for Codex CLI, Copilot CLI, Gemini CLI
 - Web dashboard for results visualization
 - Cloud execution / distributed runs
 - CI/CD integrations
@@ -61,6 +65,78 @@ skills:
   - name: test-runner
     path: ./skills/test-runner.md
 ```
+
+### Profile Scanning (Key Feature)
+
+The core differentiator: **automatically scan a user's actual Claude Code setup** and convert it into a hoodstrut profile. No manual YAML writing required.
+
+```bash
+# Scan default Claude Code config location
+hoodstrut profile scan
+
+# Scan specific directory
+hoodstrut profile scan --path ~/.claude
+
+# Scan and save with a name
+hoodstrut profile scan --name "my-current-setup"
+
+# Scan multiple setups for comparison
+hoodstrut profile scan --path ~/.claude --name "work-setup"
+hoodstrut profile scan --path ~/personal/.claude --name "personal-setup"
+```
+
+**What gets scanned:**
+
+| Source | What We Extract |
+|--------|-----------------|
+| `~/.claude/settings.json` | Model preferences, effort level, allowed/denied tools |
+| `~/.claude/settings.local.json` | Local overrides |
+| `~/.claude/.clauderc` | Project-specific settings |
+| `~/.claude/mcp_servers.json` | MCP server configurations |
+| `~/.claude/CLAUDE.md` | Custom system prompt / instructions |
+| `~/.claude/commands/` | Custom slash commands (skills) |
+| Environment variables | `ANTHROPIC_MODEL`, `CLAUDE_CODE_*` vars |
+
+**Scan output:**
+
+```yaml
+# Generated profile: my-current-setup.yaml
+# Scanned from: /Users/alex/.claude
+# Scanned at: 2025-01-15T10:30:00Z
+
+name: my-current-setup
+description: "Auto-generated from ~/.claude"
+source: scanned
+source_path: /Users/alex/.claude
+
+model: claude-sonnet-4-20250514
+effort: high
+
+system_prompt: |
+  # Imported from ~/.claude/CLAUDE.md
+  You are a senior engineer at Acme Corp...
+
+mcp_servers:
+  - name: github
+    command: npx
+    args: ["-y", "@anthropic/mcp-server-github"]
+    env:
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"  # Reference, not value
+  - name: filesystem
+    command: npx
+    args: ["-y", "@anthropic/mcp-server-filesystem"]
+
+skills:
+  - name: deploy
+    source: /Users/alex/.claude/commands/deploy.md
+```
+
+**Important considerations:**
+
+1. **No secrets captured**: Environment variables are referenced (`${VAR}`), not copied
+2. **Diff-able**: Generated profiles are clean YAML that can be version-controlled
+3. **Editable**: Users can tweak the scanned profile before benchmarking
+4. **Reproducible**: Profile includes `source_path` and timestamp for traceability
 
 ### Task
 A realistic work item defined in Markdown, similar to a Jira ticket:
@@ -129,6 +205,13 @@ hoodstrut/
 │   │   ├── metrics.ts        # Token/cost/time tracking
 │   │   ├── scorer.ts         # Scoring algorithm
 │   │   └── judge.ts          # AI judge for success evaluation
+│   ├── scanner/
+│   │   ├── index.ts          # Main scanner orchestration
+│   │   ├── claude-config.ts  # Parse Claude Code settings.json
+│   │   ├── mcp-config.ts     # Parse MCP server configurations
+│   │   ├── prompts.ts        # Extract CLAUDE.md and custom prompts
+│   │   ├── skills.ts         # Discover custom commands/skills
+│   │   └── env.ts            # Environment variable detection
 │   ├── docker/
 │   │   ├── executor.ts       # Docker container management
 │   │   ├── templates/        # Dockerfile templates
@@ -195,6 +278,38 @@ hoodstrut profile show aggressive-coder   # Show profile details
 hoodstrut profile validate ./my-profile.yaml
 hoodstrut profile create                  # Interactive profile creation
 ```
+
+### `hoodstrut profile scan`
+**Key command**: Auto-detect and import existing Claude Code configuration.
+
+```bash
+# Scan default location (~/.claude)
+hoodstrut profile scan
+
+# Scan with custom name
+hoodstrut profile scan --name "my-work-setup"
+
+# Scan specific directory
+hoodstrut profile scan --path /path/to/.claude --name "custom-setup"
+
+# Scan and immediately validate
+hoodstrut profile scan --name "new-setup" --validate
+
+# Scan in dry-run mode (show what would be extracted)
+hoodstrut profile scan --dry-run
+
+# Scan project-specific config (from current directory)
+hoodstrut profile scan --project
+```
+
+**Flags:**
+- `--name, -n`: Name for the generated profile (default: auto-generated timestamp)
+- `--path, -p`: Path to Claude config directory (default: `~/.claude`)
+- `--project`: Scan project-local config (`.claude/` in current directory)
+- `--output, -o`: Output directory for generated profile (default: `./profiles/`)
+- `--dry-run`: Show what would be extracted without writing
+- `--validate`: Validate the generated profile after creation
+- `--include-env`: Include current environment variables in profile
 
 ### `hoodstrut task`
 Manage tasks.
@@ -574,27 +689,37 @@ ENTRYPOINT ["/run-task.sh"]
 - [ ] Task schema and parser
 - [ ] Basic CLI structure with Commander.js
 
-### Phase 2: Docker Integration
+### Phase 2: Profile Scanner
+- [ ] Claude Code config detection (`~/.claude/` structure)
+- [ ] Settings parser (`settings.json`, `settings.local.json`)
+- [ ] MCP server config parser
+- [ ] CLAUDE.md / system prompt extraction
+- [ ] Custom commands/skills discovery
+- [ ] Environment variable detection (reference, not capture)
+- [ ] Profile YAML generation from scanned data
+- [ ] `hoodstrut profile scan` command
+
+### Phase 3: Docker Integration
 - [ ] Docker executor (build, run, cleanup)
 - [ ] Repo copying and isolation
 - [ ] Claude Code invocation inside container
 - [ ] Output capture and streaming
 
-### Phase 3: Metrics & Results
+### Phase 4: Metrics & Results
 - [ ] Token counting from Claude Code output
 - [ ] Cost calculation
 - [ ] Timing instrumentation
 - [ ] Success determination (command, pattern, AI judge)
 - [ ] JSON result output
 
-### Phase 4: Scoring & Reporting
+### Phase 5: Scoring & Reporting
 - [ ] Scoring algorithm implementation
 - [ ] Markdown report generation
 - [ ] Comparison reports
 - [ ] Result aggregation for benchmarks
 
-### Phase 5: Example Content & Polish
-- [ ] Example profiles
+### Phase 6: Example Content & Polish
+- [ ] Example profiles (including one scanned from real setup)
 - [ ] Example tasks
 - [ ] Example todo-app repository
 - [ ] README and documentation
@@ -606,13 +731,23 @@ ENTRYPOINT ["/run-task.sh"]
 
 The MVP is complete when:
 
-1. **Basic Flow Works**: A user can run `hoodstrut run --profile X --task Y` and get results
-2. **Isolation**: Tasks run in Docker with no host system side effects
-3. **Metrics**: Token count, cost, time, and success are accurately tracked
-4. **Scoring**: A numeric score is calculated for each run
-5. **Reporting**: JSON and Markdown outputs are generated
-6. **Examples**: User can run examples out of the box with `hoodstrut init --with-examples`
-7. **Documentation**: README explains installation, configuration, and usage
+1. **Profile Scanning Works**: User can run `hoodstrut profile scan` and get an accurate profile from their existing Claude Code setup
+2. **Basic Flow Works**: A user can run `hoodstrut run --profile X --task Y` and get results
+3. **Isolation**: Tasks run in Docker with no host system side effects
+4. **Metrics**: Token count, cost, time, and success are accurately tracked
+5. **Scoring**: A numeric score is calculated for each run
+6. **Reporting**: JSON and Markdown outputs are generated
+7. **Examples**: User can run examples out of the box with `hoodstrut init --with-examples`
+8. **Documentation**: README explains installation, configuration, and usage
+
+**The "wow" demo:**
+```bash
+# User's first experience should be this simple:
+hoodstrut profile scan --name "my-setup"
+hoodstrut init --with-examples
+hoodstrut run --profile my-setup --task fix-todo-persistence
+# → See exactly how their setup performs, with token/cost/score metrics
+```
 
 ---
 
