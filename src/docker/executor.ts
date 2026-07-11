@@ -14,7 +14,23 @@ const DOCKER_IMAGE = 'hoodstrut-runner:latest';
 const DEFAULT_TIMEOUT = 300;
 const METRICS_FILENAME = '.metrics.json';
 
+// Share one in-flight build across concurrent callers (parallel runs)
+let inFlightBuild: Promise<string> | null = null;
+
 export async function buildRunnerImage(force: boolean = false): Promise<string> {
+  if (inFlightBuild) {
+    return inFlightBuild;
+  }
+
+  inFlightBuild = doBuildRunnerImage(force);
+  try {
+    return await inFlightBuild;
+  } finally {
+    inFlightBuild = null;
+  }
+}
+
+async function doBuildRunnerImage(force: boolean): Promise<string> {
   if (!force) {
     const exists = await imageExists(DOCKER_IMAGE);
     if (exists) {

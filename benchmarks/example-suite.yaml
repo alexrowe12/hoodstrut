@@ -1,0 +1,25 @@
+# Example benchmark suite.
+# Run with: hoodstrut benchmark --config benchmarks/example-suite.yaml
+# CLI flags (--profiles, --tasks, --parallel, --name, --timeout) override these values.
+
+name: example-suite
+
+profiles:
+  # Bare names resolve to ./profiles/<name>.yaml; paths are used as-is
+  - profiles/examples/default.yaml
+  - profiles/examples/aggressive.yaml
+
+tasks:
+  # Bare ids resolve to ./tasks/<id>.md; paths are used as-is
+  - tasks/examples/hello-world.md
+  - tasks/examples/hello-world-patterns.md
+  - tasks/examples/fix-todo-persistence.md
+
+# Number of concurrent Docker containers (default: 1)
+parallel: 2
+
+# Optional per-run timeout override in seconds
+# timeout: 300
+
+# Base directory for the benchmark output directory (default: ./results)
+# output: ./results

@@ -124,6 +124,32 @@ export const RunResultSchema = z.object({
   warnings: z.array(z.string()).optional(),
 });
 
+export const BenchmarkConfigSchema = z.object({
+  name: z.string().default('benchmark'),
+  profiles: z.array(z.string()).min(1),
+  tasks: z.array(z.string()).min(1),
+  parallel: z.number().int().min(1).default(1),
+  timeout: z.number().optional(),
+  output: z.string().default('./results'),
+});
+
+export const BenchmarkSummarySchema = z.object({
+  name: z.string(),
+  timestamp: z.string(),
+  config: BenchmarkConfigSchema,
+  duration_seconds: z.number(),
+  total_runs: z.number(),
+  successful_runs: z.number(),
+  failed_runs: z.number(),
+  errored_runs: z.number(),
+  total_cost_usd: z.number(),
+  total_score: z.number(),
+  errors: z.array(z.object({
+    run_id: z.string(),
+    message: z.string(),
+  })),
+});
+
 export type McpServer = z.infer<typeof McpServerSchema>;
 export type Skill = z.infer<typeof SkillSchema>;
 export type ProfileSettings = z.infer<typeof ProfileSettingsSchema>;
@@ -133,3 +159,5 @@ export type Metrics = z.infer<typeof MetricsSchema>;
 export type ScoreBreakdown = z.infer<typeof ScoreBreakdownSchema>;
 export type Score = z.infer<typeof ScoreSchema>;
 export type RunResult = z.infer<typeof RunResultSchema>;
+export type BenchmarkConfig = z.infer<typeof BenchmarkConfigSchema>;
+export type BenchmarkSummary = z.infer<typeof BenchmarkSummarySchema>;

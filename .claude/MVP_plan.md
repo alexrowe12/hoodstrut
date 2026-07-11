@@ -808,12 +808,13 @@ ENTRYPOINT ["node", "/scripts/run-sdk.js"]
 - [x] Result aggregation by profile and task
 - **Deferred:** Comparison reports (moved to Phase 7)
 
-### Phase 7: Parallel Execution & Benchmarks
-- [ ] Concurrent container execution (`--parallel N`)
-- [ ] Resource management and container pooling
-- [ ] Benchmark orchestration (multiple profiles × multiple tasks)
-- [ ] Aggregated benchmark results
-- [ ] Comparison reports (`hoodstrut report --compare`)
+### Phase 7: Parallel Execution & Benchmarks ✅
+- [x] Concurrent container execution (`--parallel N`)
+- [x] Resource management (concurrency semaphore + shared image build; container pooling intentionally dropped to preserve isolation)
+- [x] Benchmark orchestration (multiple profiles × multiple tasks, CLI flags + YAML config)
+- [x] Aggregated benchmark results (`results/benchmark-<name>-<timestamp>/` with `benchmark.json` + `report.md`)
+- [x] Comparison reports (`hoodstrut report <dirA> --compare <dirB>` → `comparison.md`)
+- **Design notes:** run pipeline extracted to `src/core/run-pipeline.ts` (shared by `run` and `benchmark`); benchmark exit code is 0 when orchestration completes (task failures are data), 1 only on config/infra errors
 
 ### Phase 8: Example Content & Polish
 - [ ] Example profiles (including one scanned from real setup)

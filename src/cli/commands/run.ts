@@ -1,29 +1,13 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { resolve, extname, dirname } from 'node:path';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { resolve, dirname } from 'node:path';
+import { mkdir } from 'node:fs/promises';
 import { loadProfile } from '../../core/profile.js';
 import { loadTask } from '../../core/task.js';
-import { runContainer, buildRunnerImage } from '../../docker/index.js';
-import { evaluateSuccess } from '../../core/success.js';
-import { calculateScore } from '../../core/scorer.js';
+import { buildRunnerImage } from '../../docker/index.js';
+import { executeRun, resolveProfilePath, resolveTaskPath } from '../../core/run-pipeline.js';
 import { generateReport } from './report.js';
 import type { TelemetryConfig } from '../../metrics/types.js';
-import type { RunResult } from '../../core/types.js';
-
-function resolveProfilePath(nameOrPath: string): string {
-  if (extname(nameOrPath) === '.yaml' || extname(nameOrPath) === '.yml') {
-    return resolve(nameOrPath);
-  }
-  return resolve('./profiles', `${nameOrPath}.yaml`);
-}
-
-function resolveTaskPath(idOrPath: string): string {
-  if (extname(idOrPath) === '.md') {
-    return resolve(idOrPath);
-  }
-  return resolve('./tasks', `${idOrPath}.md`);
-}
 
 function formatCost(cost: number): string {
   if (cost < 0.01) {
@@ -85,9 +69,10 @@ export const runCommand = new Command('run')
       console.log(chalk.blue('Starting execution in Docker container...'));
       console.log(chalk.gray(`Output directory: ${outputDir}`));
 
-      const executionResult = await runContainer({
+      const { runResult, duration } = await executeRun({
         profile,
         task,
+        runId,
         outputDir,
         verbose: options.verbose,
         timeout: options.timeout,
@@ -95,42 +80,24 @@ export const runCommand = new Command('run')
       });
 
       console.log('');
-      console.log(chalk.blue('Evaluating success...'));
-
-      const successResult = await evaluateSuccess({
-        exitCode: executionResult.exitCode,
-        stdout: executionResult.stdoutContent,
-        stderr: executionResult.stderrContent,
-        task: {
-          success_command: task.success_command,
-          success_patterns: task.success_patterns,
-          ai_judge: task.ai_judge,
-          ai_judge_criteria: task.ai_judge_criteria,
-          title: task.title,
-          body: task.body,
-        },
-        filesChanged: executionResult.filesChanged,
-      });
-
-      console.log('');
       console.log(chalk.bold('=== Execution Complete ==='));
       console.log('');
 
-      if (successResult.success) {
+      if (runResult.result.success) {
         console.log(chalk.green(`✓ Success`));
       } else {
-        console.log(chalk.red(`✗ Failed (exit code: ${executionResult.exitCode})`));
+        console.log(chalk.red(`✗ Failed (exit code: ${runResult.result.exit_code})`));
       }
 
-      console.log(chalk.gray(`Duration: ${executionResult.duration}s`));
-      console.log(chalk.gray(`Success method: ${successResult.method}`));
-      if (successResult.details) {
-        console.log(chalk.gray(`Details: ${successResult.details}`));
+      console.log(chalk.gray(`Duration: ${duration}s`));
+      console.log(chalk.gray(`Success method: ${runResult.result.success_method}`));
+      if (runResult.result.success_details) {
+        console.log(chalk.gray(`Details: ${runResult.result.success_details}`));
       }
 
       console.log('');
-      if (executionResult.metrics.success) {
-        const m = executionResult.metrics.metrics;
+      if (runResult.metrics) {
+        const m = runResult.metrics;
         console.log(chalk.bold('=== Metrics ==='));
         console.log(chalk.cyan(`Model: ${m.model}`));
         console.log(chalk.cyan(`Tokens: ${m.tokens.total_tokens.toLocaleString()} (${m.tokens.input_tokens.toLocaleString()} in / ${m.tokens.output_tokens.toLocaleString()} out)`));
@@ -142,7 +109,7 @@ export const runCommand = new Command('run')
       } else {
         console.log(chalk.bgYellow.black(' ⚠️  WARNING: METRICS EXTRACTION FAILED '));
         console.log('');
-        for (const warning of executionResult.metrics.warnings) {
+        for (const warning of runResult.warnings ?? []) {
           console.log(chalk.yellow(`  • ${warning}`));
         }
         console.log('');
@@ -150,29 +117,31 @@ export const runCommand = new Command('run')
         console.log(chalk.yellow('This may indicate an issue with the Agent SDK or container setup.'));
       }
 
-      if (executionResult.filesChanged.created.length > 0) {
-        console.log(chalk.green(`Files created: ${executionResult.filesChanged.created.length}`));
-        for (const file of executionResult.filesChanged.created.slice(0, 5)) {
+      const { files_created, files_modified, files_deleted } = runResult.result;
+
+      if (files_created.length > 0) {
+        console.log(chalk.green(`Files created: ${files_created.length}`));
+        for (const file of files_created.slice(0, 5)) {
           console.log(chalk.gray(`  + ${file}`));
         }
-        if (executionResult.filesChanged.created.length > 5) {
-          console.log(chalk.gray(`  ... and ${executionResult.filesChanged.created.length - 5} more`));
+        if (files_created.length > 5) {
+          console.log(chalk.gray(`  ... and ${files_created.length - 5} more`));
         }
       }
 
-      if (executionResult.filesChanged.modified.length > 0) {
-        console.log(chalk.yellow(`Files modified: ${executionResult.filesChanged.modified.length}`));
-        for (const file of executionResult.filesChanged.modified.slice(0, 5)) {
+      if (files_modified.length > 0) {
+        console.log(chalk.yellow(`Files modified: ${files_modified.length}`));
+        for (const file of files_modified.slice(0, 5)) {
           console.log(chalk.gray(`  ~ ${file}`));
         }
-        if (executionResult.filesChanged.modified.length > 5) {
-          console.log(chalk.gray(`  ... and ${executionResult.filesChanged.modified.length - 5} more`));
+        if (files_modified.length > 5) {
+          console.log(chalk.gray(`  ... and ${files_modified.length - 5} more`));
         }
       }
 
-      if (executionResult.filesChanged.deleted.length > 0) {
-        console.log(chalk.red(`Files deleted: ${executionResult.filesChanged.deleted.length}`));
-        for (const file of executionResult.filesChanged.deleted.slice(0, 5)) {
+      if (files_deleted.length > 0) {
+        console.log(chalk.red(`Files deleted: ${files_deleted.length}`));
+        for (const file of files_deleted.slice(0, 5)) {
           console.log(chalk.gray(`  - ${file}`));
         }
       }
@@ -180,58 +149,7 @@ export const runCommand = new Command('run')
       console.log('');
       console.log(chalk.gray(`Logs: ${outputDir}`));
 
-      const warnings: string[] = [];
-      if (!executionResult.metrics.success) {
-        warnings.push(...executionResult.metrics.warnings);
-      }
-
-      const score = calculateScore({
-        success: successResult.success,
-        actualCost: executionResult.metrics.success ? executionResult.metrics.metrics.cost_usd : null,
-        duration: executionResult.duration,
-        difficulty: task.difficulty,
-        estimatedTokens: task.estimated_tokens,
-        expectedTime: task.expected_time,
-        profileModel: profile.model,
-      });
-
-      const runResult: RunResult = {
-        id: runId,
-        timestamp: new Date().toISOString(),
-        profile: {
-          name: profile.name,
-          model: profile.model,
-          effort: profile.effort,
-        },
-        task: {
-          id: task.id,
-          title: task.title,
-          difficulty: task.difficulty,
-        },
-        metrics: executionResult.metrics.success ? executionResult.metrics.metrics : null,
-        result: {
-          success: successResult.success,
-          success_method: successResult.method,
-          success_details: successResult.details,
-          exit_code: executionResult.exitCode,
-          files_modified: executionResult.filesChanged.modified,
-          files_created: executionResult.filesChanged.created,
-          files_deleted: executionResult.filesChanged.deleted,
-        },
-        score,
-        logs: {
-          stdout: executionResult.stdout,
-          stderr: executionResult.stderr,
-        },
-        warnings: warnings.length > 0 ? warnings : undefined,
-      };
-
-      await writeFile(
-        resolve(outputDir, 'run-result.json'),
-        JSON.stringify(runResult, null, 2),
-        'utf-8'
-      );
-
+      const score = runResult.score;
       if (score) {
         console.log('');
         console.log(chalk.bold('=== Score ==='));
@@ -251,7 +169,7 @@ export const runCommand = new Command('run')
         // Report generation is best-effort
       }
 
-      process.exit(successResult.success ? 0 : 1);
+      process.exit(runResult.result.success ? 0 : 1);
 
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

@@ -32,7 +32,7 @@ export interface TaskStats {
   worstScore: number;
 }
 
-function formatDuration(seconds: number): string {
+export function formatDuration(seconds: number): string {
   if (seconds < 60) {
     return `${Math.round(seconds)}s`;
   }
@@ -46,14 +46,14 @@ function formatDuration(seconds: number): string {
   return `${hours}h ${mins}m`;
 }
 
-function formatCost(cost: number): string {
+export function formatCost(cost: number): string {
   if (cost < 0.01) {
     return `$${cost.toFixed(4)}`;
   }
   return `$${cost.toFixed(2)}`;
 }
 
-function formatPercent(rate: number): string {
+export function formatPercent(rate: number): string {
   return `${Math.round(rate * 100)}%`;
 }
 

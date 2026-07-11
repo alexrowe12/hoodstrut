@@ -1,10 +1,11 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { resolve } from 'node:path';
+import { resolve, basename } from 'node:path';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { RunResultSchema, type RunResult } from '../../core/types.js';
 import { calculateScore } from '../../core/scorer.js';
 import { generateAggregateReport } from '../../output/markdown.js';
+import { generateComparisonReport } from '../../output/comparison.js';
 
 async function loadRunResults(resultsDir: string): Promise<RunResult[]> {
   const entries = await readdir(resultsDir, { withFileTypes: true });
@@ -65,9 +66,43 @@ export const reportCommand = new Command('report')
   .description('Generate aggregate report from benchmark results')
   .argument('[results]', 'Path to results directory', './results')
   .option('-f, --format <format>', 'Output format (markdown)', 'markdown')
+  .option('--compare <directory>', 'Compare against a second results directory')
   .action(async (resultsPath, options) => {
     try {
       const absPath = resolve(resultsPath);
+
+      if (options.compare) {
+        const comparePath = resolve(options.compare);
+        console.log(chalk.blue(`Comparing ${absPath} vs ${comparePath}...`));
+
+        const [resultsA, resultsB] = await Promise.all([
+          loadRunResults(absPath),
+          loadRunResults(comparePath),
+        ]);
+
+        if (resultsA.length === 0) {
+          console.log(chalk.yellow(`No results found in ${absPath}.`));
+          return;
+        }
+        if (resultsB.length === 0) {
+          console.log(chalk.yellow(`No results found in ${comparePath}.`));
+          return;
+        }
+
+        const comparison = generateComparisonReport(
+          { label: basename(absPath), results: resultsA.map(backfillScore) },
+          { label: basename(comparePath), results: resultsB.map(backfillScore) },
+          new Date().toISOString()
+        );
+
+        const comparisonPath = resolve(absPath, 'comparison.md');
+        await writeFile(comparisonPath, comparison, 'utf-8');
+        console.log(chalk.green(`Comparison written to ${comparisonPath}`));
+        console.log('');
+        console.log(comparison);
+        return;
+      }
+
       console.log(chalk.blue(`Scanning results in ${absPath}...`));
 
       const results = await loadRunResults(absPath);
