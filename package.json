@@ -8,7 +8,7 @@
     "hoodstrut": "./dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp -r src/docker/templates dist/docker/ && cp -r src/docker/scripts dist/docker/",
     "dev": "tsc --watch",
     "test": "vitest",
     "test:run": "vitest run",
@@ -29,6 +29,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
     "execa": "^9.6.1",

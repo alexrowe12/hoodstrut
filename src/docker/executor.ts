@@ -31,6 +31,7 @@ export async function buildRunnerImage(force: boolean = false): Promise<string> 
     await cp(join(templatesDir, 'Dockerfile.runner'), join(buildContext, 'Dockerfile'));
     await mkdir(join(buildContext, 'scripts'));
     await cp(join(scriptsDir, 'run-task.sh'), join(buildContext, 'scripts', 'run-task.sh'));
+    await cp(join(scriptsDir, 'run-sdk.mjs'), join(buildContext, 'scripts', 'run-sdk.mjs'));
 
     await runDockerCommand(['build', '-t', DOCKER_IMAGE, buildContext]);
 
@@ -98,11 +99,12 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
     const filesAfter = await listFilesRecursive(workspaceDir);
     const filesChanged = computeFileChanges(filesBefore, filesAfter);
 
-    const success = task.success_command ? exitCode === 0 : exitCode === 0;
-    const successMethod = task.success_command ? 'command' : 'exit_code';
-
-    // Read metrics from the metrics file written by run-sdk.mjs
     const metrics = await readMetricsFile(workspaceDir, duration);
+
+    const [stdoutContent, stderrContent] = await Promise.all([
+      readFile(streams.stdoutPath, 'utf-8').catch(() => ''),
+      readFile(streams.stderrPath, 'utf-8').catch(() => ''),
+    ]);
 
     return {
       containerId,
@@ -110,8 +112,8 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
       duration,
       stdout: streams.stdoutPath,
       stderr: streams.stderrPath,
-      success,
-      successMethod,
+      stdoutContent,
+      stderrContent,
       filesChanged,
       metrics,
     };

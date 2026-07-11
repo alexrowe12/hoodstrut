@@ -470,19 +470,11 @@ estimated_tokens: number      # Expected token usage (for scoring baseline)
     "files_created": [],
     "files_deleted": []
   },
-  "score": {
-    "value": 847,
-    "breakdown": {
-      "success_bonus": 500,
-      "token_efficiency": 180,
-      "time_bonus": 120,
-      "difficulty_multiplier": 1.2
-    }
-  },
+  "score": null,  // Populated in Phase 6
   "logs": {
     "stdout": "path/to/stdout.log",
     "stderr": "path/to/stderr.log",
-    "conversation": "path/to/conversation.json"
+    "conversation": ""  // Deferred - stdout serves as proxy for MVP
   }
 }
 ```
@@ -799,11 +791,15 @@ ENTRYPOINT ["node", "/scripts/run-sdk.js"]
 - [ ] Update run.ts to display metrics or show warning banner
 - [ ] Tests for pricing config and metrics extraction
 
-### Phase 5: Success Determination & Results
-- [ ] Success determination (command exit code, pattern matching, AI judge)
-- [ ] JSON result output with full metrics
-- [ ] File change tracking (modified, created, deleted)
-- [ ] Run result persistence to `results/` directory
+### Phase 5: Success Determination & Results ✅
+- [x] Success determination (command exit code, pattern matching, AI judge)
+  - Pattern matching: regex first, substring fallback
+  - AI judge: separate Anthropic API call using Sonnet 4 with low thinking budget
+- [x] JSON result output matching `RunResultSchema`
+- [x] File change tracking (modified, created, deleted) — done in Phase 3
+- [x] Run result persistence to `results/` directory (writes `run-result.json`)
+- [x] Placeholder score (null until Phase 6)
+- **Deferred:** Structured conversation log capture (stdout proxy sufficient for MVP)
 
 ### Phase 6: Scoring & Reporting
 - [ ] Scoring algorithm implementation

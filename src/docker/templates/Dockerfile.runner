@@ -3,6 +3,11 @@ FROM node:20-slim
 # Install Claude Code CLI and Agent SDK
 RUN npm install -g @anthropic-ai/claude-code @anthropic-ai/claude-agent-sdk
 
+# Node's ESM loader ignores NODE_PATH and the global install dir; it only walks
+# up node_modules from the importing file. Symlink the global modules to
+# /node_modules so run-sdk.mjs (at /) can resolve the SDK via a bare import.
+RUN ln -s /usr/local/lib/node_modules /node_modules
+
 # Install common dev tools
 RUN apt-get update && apt-get install -y \
     git \
@@ -16,6 +21,12 @@ RUN apt-get update && apt-get install -y \
 # Configure git for any operations that might need it
 RUN git config --global user.email "hoodstrut@localhost" && \
     git config --global user.name "hoodstrut"
+
+# The container runs as root, and Claude Code refuses
+# --dangerously-skip-permissions (bypassPermissions) under root unless it
+# knows it's inside a sandbox. Without this the CLI exits 1 before auth,
+# which the SDK surfaces as apiKeySource: "none" / "Not logged in".
+ENV IS_SANDBOX=1
 
 WORKDIR /workspace
 

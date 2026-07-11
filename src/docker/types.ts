@@ -17,8 +17,8 @@ export interface ExecutionResult {
   duration: number;
   stdout: string;
   stderr: string;
-  success: boolean;
-  successMethod: 'command' | 'exit_code';
+  stdoutContent: string;
+  stderrContent: string;
   filesChanged: {
     modified: string[];
     created: string[];

@@ -19,6 +19,7 @@ import { writeFileSync } from 'node:fs';
 
 async function main() {
   const taskPrompt = process.argv[2];
+
   if (!taskPrompt) {
     console.error('Usage: run-sdk.mjs <task-prompt>');
     process.exit(1);
@@ -68,11 +69,21 @@ async function main() {
   try {
     const seenMessageIds = new Set();
 
+    const sdkOptions = {
+      cwd: workingDir,
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+    };
+
+    // Pass model from env if specified
+    if (process.env.ANTHROPIC_MODEL) {
+      sdkOptions.settings = { model: process.env.ANTHROPIC_MODEL };
+      console.log(`Using model: ${process.env.ANTHROPIC_MODEL}`);
+    }
+
     const stream = query({
       prompt: taskPrompt,
-      options: {
-        cwd: workingDir,
-      },
+      options: sdkOptions,
     });
 
     for await (const message of stream) {

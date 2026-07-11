@@ -5,7 +5,9 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { loadProfile } from '../../core/profile.js';
 import { loadTask } from '../../core/task.js';
 import { runContainer, buildRunnerImage } from '../../docker/index.js';
+import { evaluateSuccess } from '../../core/success.js';
 import type { TelemetryConfig } from '../../metrics/types.js';
+import type { RunResult } from '../../core/types.js';
 
 function resolveProfilePath(nameOrPath: string): string {
   if (extname(nameOrPath) === '.yaml' || extname(nameOrPath) === '.yml') {
@@ -74,7 +76,7 @@ export const runCommand = new Command('run')
       console.log(chalk.blue('Starting execution in Docker container...'));
       console.log(chalk.gray(`Output directory: ${outputDir}`));
 
-      const result = await runContainer({
+      const executionResult = await runContainer({
         profile,
         task,
         outputDir,
@@ -84,22 +86,42 @@ export const runCommand = new Command('run')
       });
 
       console.log('');
+      console.log(chalk.blue('Evaluating success...'));
+
+      const successResult = await evaluateSuccess({
+        exitCode: executionResult.exitCode,
+        stdout: executionResult.stdoutContent,
+        stderr: executionResult.stderrContent,
+        task: {
+          success_command: task.success_command,
+          success_patterns: task.success_patterns,
+          ai_judge: task.ai_judge,
+          ai_judge_criteria: task.ai_judge_criteria,
+          title: task.title,
+          body: task.body,
+        },
+        filesChanged: executionResult.filesChanged,
+      });
+
+      console.log('');
       console.log(chalk.bold('=== Execution Complete ==='));
       console.log('');
 
-      if (result.success) {
+      if (successResult.success) {
         console.log(chalk.green(`✓ Success`));
       } else {
-        console.log(chalk.red(`✗ Failed (exit code: ${result.exitCode})`));
+        console.log(chalk.red(`✗ Failed (exit code: ${executionResult.exitCode})`));
       }
 
-      console.log(chalk.gray(`Duration: ${result.duration}s`));
-      console.log(chalk.gray(`Success method: ${result.successMethod}`));
+      console.log(chalk.gray(`Duration: ${executionResult.duration}s`));
+      console.log(chalk.gray(`Success method: ${successResult.method}`));
+      if (successResult.details) {
+        console.log(chalk.gray(`Details: ${successResult.details}`));
+      }
 
-      // Display metrics or warning
       console.log('');
-      if (result.metrics.success) {
-        const m = result.metrics.metrics;
+      if (executionResult.metrics.success) {
+        const m = executionResult.metrics.metrics;
         console.log(chalk.bold('=== Metrics ==='));
         console.log(chalk.cyan(`Model: ${m.model}`));
         console.log(chalk.cyan(`Tokens: ${m.tokens.total_tokens.toLocaleString()} (${m.tokens.input_tokens.toLocaleString()} in / ${m.tokens.output_tokens.toLocaleString()} out)`));
@@ -109,10 +131,9 @@ export const runCommand = new Command('run')
         console.log(chalk.cyan(`Cost: $${m.cost_usd.toFixed(4)}`));
         console.log(chalk.cyan(`Turns: ${m.turns}`));
       } else {
-        // LOUD WARNING - metrics are the whole point!
         console.log(chalk.bgYellow.black(' ⚠️  WARNING: METRICS EXTRACTION FAILED '));
         console.log('');
-        for (const warning of result.metrics.warnings) {
+        for (const warning of executionResult.metrics.warnings) {
           console.log(chalk.yellow(`  • ${warning}`));
         }
         console.log('');
@@ -120,29 +141,29 @@ export const runCommand = new Command('run')
         console.log(chalk.yellow('This may indicate an issue with the Agent SDK or container setup.'));
       }
 
-      if (result.filesChanged.created.length > 0) {
-        console.log(chalk.green(`Files created: ${result.filesChanged.created.length}`));
-        for (const file of result.filesChanged.created.slice(0, 5)) {
+      if (executionResult.filesChanged.created.length > 0) {
+        console.log(chalk.green(`Files created: ${executionResult.filesChanged.created.length}`));
+        for (const file of executionResult.filesChanged.created.slice(0, 5)) {
           console.log(chalk.gray(`  + ${file}`));
         }
-        if (result.filesChanged.created.length > 5) {
-          console.log(chalk.gray(`  ... and ${result.filesChanged.created.length - 5} more`));
+        if (executionResult.filesChanged.created.length > 5) {
+          console.log(chalk.gray(`  ... and ${executionResult.filesChanged.created.length - 5} more`));
         }
       }
 
-      if (result.filesChanged.modified.length > 0) {
-        console.log(chalk.yellow(`Files modified: ${result.filesChanged.modified.length}`));
-        for (const file of result.filesChanged.modified.slice(0, 5)) {
+      if (executionResult.filesChanged.modified.length > 0) {
+        console.log(chalk.yellow(`Files modified: ${executionResult.filesChanged.modified.length}`));
+        for (const file of executionResult.filesChanged.modified.slice(0, 5)) {
           console.log(chalk.gray(`  ~ ${file}`));
         }
-        if (result.filesChanged.modified.length > 5) {
-          console.log(chalk.gray(`  ... and ${result.filesChanged.modified.length - 5} more`));
+        if (executionResult.filesChanged.modified.length > 5) {
+          console.log(chalk.gray(`  ... and ${executionResult.filesChanged.modified.length - 5} more`));
         }
       }
 
-      if (result.filesChanged.deleted.length > 0) {
-        console.log(chalk.red(`Files deleted: ${result.filesChanged.deleted.length}`));
-        for (const file of result.filesChanged.deleted.slice(0, 5)) {
+      if (executionResult.filesChanged.deleted.length > 0) {
+        console.log(chalk.red(`Files deleted: ${executionResult.filesChanged.deleted.length}`));
+        for (const file of executionResult.filesChanged.deleted.slice(0, 5)) {
           console.log(chalk.gray(`  - ${file}`));
         }
       }
@@ -150,7 +171,12 @@ export const runCommand = new Command('run')
       console.log('');
       console.log(chalk.gray(`Logs: ${outputDir}`));
 
-      const summary = {
+      const warnings: string[] = [];
+      if (!executionResult.metrics.success) {
+        warnings.push(...executionResult.metrics.warnings);
+      }
+
+      const runResult: RunResult = {
         id: runId,
         timestamp: new Date().toISOString(),
         profile: {
@@ -163,28 +189,31 @@ export const runCommand = new Command('run')
           title: task.title,
           difficulty: task.difficulty,
         },
+        metrics: executionResult.metrics.success ? executionResult.metrics.metrics : null,
         result: {
-          success: result.success,
-          successMethod: result.successMethod,
-          exitCode: result.exitCode,
-          duration: result.duration,
-          filesChanged: result.filesChanged,
+          success: successResult.success,
+          success_method: successResult.method,
+          success_details: successResult.details,
+          exit_code: executionResult.exitCode,
+          files_modified: executionResult.filesChanged.modified,
+          files_created: executionResult.filesChanged.created,
+          files_deleted: executionResult.filesChanged.deleted,
         },
-        metrics: result.metrics.success ? result.metrics.metrics : null,
-        metrics_warnings: result.metrics.success ? [] : result.metrics.warnings,
+        score: null,
         logs: {
-          stdout: result.stdout,
-          stderr: result.stderr,
+          stdout: executionResult.stdout,
+          stderr: executionResult.stderr,
         },
+        warnings: warnings.length > 0 ? warnings : undefined,
       };
 
       await writeFile(
-        resolve(outputDir, 'summary.json'),
-        JSON.stringify(summary, null, 2),
+        resolve(outputDir, 'run-result.json'),
+        JSON.stringify(runResult, null, 2),
         'utf-8'
       );
 
-      process.exit(result.success ? 0 : 1);
+      process.exit(successResult.success ? 0 : 1);
 
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

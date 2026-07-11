@@ -66,7 +66,7 @@ describe('pricing', () => {
     });
 
     it('has correct structure for all models', () => {
-      for (const [model, pricing] of Object.entries(MODEL_PRICING)) {
+      for (const pricing of Object.values(MODEL_PRICING)) {
         expect(pricing).toHaveProperty('input');
         expect(pricing).toHaveProperty('output');
         expect(pricing).toHaveProperty('cache_read');
@@ -79,7 +79,7 @@ describe('pricing', () => {
     });
 
     it('cache_read is cheaper than input', () => {
-      for (const [_, pricing] of Object.entries(MODEL_PRICING)) {
+      for (const pricing of Object.values(MODEL_PRICING)) {
         expect(pricing.cache_read).toBeLessThan(pricing.input);
       }
     });

@@ -100,21 +100,23 @@ export const RunResultSchema = z.object({
     title: z.string(),
     difficulty: z.string().optional(),
   }),
-  metrics: MetricsSchema,
+  metrics: MetricsSchema.nullable(),
   result: z.object({
     success: z.boolean(),
-    success_method: z.enum(['command', 'pattern', 'ai_judge', 'manual']),
+    success_method: z.enum(['command', 'pattern', 'ai_judge', 'exit_code']),
+    success_details: z.string().optional(),
     exit_code: z.number().optional(),
     files_modified: z.array(z.string()),
     files_created: z.array(z.string()),
     files_deleted: z.array(z.string()),
   }),
-  score: ScoreSchema,
+  score: ScoreSchema.nullable(),
   logs: z.object({
     stdout: z.string(),
     stderr: z.string(),
-    conversation: z.string(),
+    conversation: z.string().optional(),
   }),
+  warnings: z.array(z.string()).optional(),
 });
 
 export type McpServer = z.infer<typeof McpServerSchema>;

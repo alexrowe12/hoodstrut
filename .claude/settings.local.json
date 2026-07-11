@@ -7,7 +7,14 @@
       "Bash(npm list:*)",
       "Bash(npm uninstall:*)",
       "Bash(hash -r)",
-      "Bash(claude --version)"
+      "Bash(claude --version)",
+      "Bash(npm run *)",
+      "Bash(docker rmi *)",
+      "Bash(node dist/cli/index.js run -p test-scan -t tasks/examples/hello-world.md --build --verbose)",
+      "Bash(docker run *)",
+      "Bash(docker build *)",
+      "Bash(grep -v \"^$\")",
+      "Read(//Users/alexrowe/.volta/tools/image/node/24.12.0/lib/node_modules/@anthropic-ai/**)"
     ]
   }
 }

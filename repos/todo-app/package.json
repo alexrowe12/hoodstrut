@@ -1,0 +1,10 @@
+{
+  "name": "todo-app",
+  "version": "1.0.0",
+  "description": "Simple todo app for hoodstrut benchmarking",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node test.js",
+    "start": "node src/index.js"
+  }
+}
