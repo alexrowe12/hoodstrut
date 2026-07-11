@@ -1,0 +1,257 @@
+import type { RunResult } from '../core/types.js';
+
+export interface AggregateStats {
+  totalRuns: number;
+  successfulRuns: number;
+  successRate: number;
+  totalCost: number;
+  totalDuration: number;
+  totalScore: number;
+  avgScore: number;
+}
+
+export interface ProfileStats {
+  name: string;
+  runs: number;
+  successful: number;
+  successRate: number;
+  totalCost: number;
+  avgCost: number;
+  totalScore: number;
+  avgScore: number;
+}
+
+export interface TaskStats {
+  id: string;
+  title: string;
+  runs: number;
+  successful: number;
+  bestProfile: string | null;
+  bestScore: number;
+  worstProfile: string | null;
+  worstScore: number;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) {
+    return `${Math.round(seconds)}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  if (minutes < 60) {
+    return secs > 0 ? `${minutes}m ${secs}s` : `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${hours}h ${mins}m`;
+}
+
+function formatCost(cost: number): string {
+  if (cost < 0.01) {
+    return `$${cost.toFixed(4)}`;
+  }
+  return `$${cost.toFixed(2)}`;
+}
+
+function formatPercent(rate: number): string {
+  return `${Math.round(rate * 100)}%`;
+}
+
+function calculateAggregateStats(results: RunResult[]): AggregateStats {
+  const successful = results.filter(r => r.result.success);
+  const totalCost = results.reduce((sum, r) => sum + (r.metrics?.cost_usd ?? 0), 0);
+  const totalDuration = results.reduce((sum, r) => sum + (r.metrics?.duration_seconds ?? 0), 0);
+  const scoredResults = results.filter(r => r.score !== null);
+  const totalScore = scoredResults.reduce((sum, r) => sum + (r.score?.value ?? 0), 0);
+
+  return {
+    totalRuns: results.length,
+    successfulRuns: successful.length,
+    successRate: results.length > 0 ? successful.length / results.length : 0,
+    totalCost,
+    totalDuration,
+    totalScore,
+    avgScore: scoredResults.length > 0 ? totalScore / scoredResults.length : 0,
+  };
+}
+
+function calculateProfileStats(results: RunResult[]): ProfileStats[] {
+  const byProfile = new Map<string, RunResult[]>();
+
+  for (const result of results) {
+    const name = result.profile.name;
+    if (!byProfile.has(name)) {
+      byProfile.set(name, []);
+    }
+    byProfile.get(name)!.push(result);
+  }
+
+  const stats: ProfileStats[] = [];
+  for (const [name, profileResults] of byProfile) {
+    const successful = profileResults.filter(r => r.result.success);
+    const totalCost = profileResults.reduce((sum, r) => sum + (r.metrics?.cost_usd ?? 0), 0);
+    const scoredResults = profileResults.filter(r => r.score !== null);
+    const totalScore = scoredResults.reduce((sum, r) => sum + (r.score?.value ?? 0), 0);
+
+    stats.push({
+      name,
+      runs: profileResults.length,
+      successful: successful.length,
+      successRate: profileResults.length > 0 ? successful.length / profileResults.length : 0,
+      totalCost,
+      avgCost: profileResults.length > 0 ? totalCost / profileResults.length : 0,
+      totalScore,
+      avgScore: scoredResults.length > 0 ? totalScore / scoredResults.length : 0,
+    });
+  }
+
+  return stats.sort((a, b) => b.totalScore - a.totalScore);
+}
+
+function calculateTaskStats(results: RunResult[]): TaskStats[] {
+  const byTask = new Map<string, RunResult[]>();
+
+  for (const result of results) {
+    const id = result.task.id;
+    if (!byTask.has(id)) {
+      byTask.set(id, []);
+    }
+    byTask.get(id)!.push(result);
+  }
+
+  const stats: TaskStats[] = [];
+  for (const [id, taskResults] of byTask) {
+    const successful = taskResults.filter(r => r.result.success);
+    const scoredResults = taskResults.filter(r => r.score !== null);
+
+    let bestProfile: string | null = null;
+    let bestScore = -Infinity;
+    let worstProfile: string | null = null;
+    let worstScore = Infinity;
+
+    for (const result of scoredResults) {
+      const score = result.score!.value;
+      if (score > bestScore) {
+        bestScore = score;
+        bestProfile = result.profile.name;
+      }
+      if (score < worstScore) {
+        worstScore = score;
+        worstProfile = result.profile.name;
+      }
+    }
+
+    stats.push({
+      id,
+      title: taskResults[0]?.task.title ?? id,
+      runs: taskResults.length,
+      successful: successful.length,
+      bestProfile: scoredResults.length > 0 ? bestProfile : null,
+      bestScore: scoredResults.length > 0 ? bestScore : 0,
+      worstProfile: scoredResults.length > 0 ? worstProfile : null,
+      worstScore: scoredResults.length > 0 ? worstScore : 0,
+    });
+  }
+
+  return stats.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+export function generateAggregateReport(results: RunResult[], generatedAt: string): string {
+  if (results.length === 0) {
+    return `# Hoodstrut Benchmark Report
+
+Generated: ${generatedAt}
+
+No results found.
+
+---
+*Generated by hoodstrut v0.1.0*
+`;
+  }
+
+  const aggregate = calculateAggregateStats(results);
+  const profileStats = calculateProfileStats(results);
+  const taskStats = calculateTaskStats(results);
+
+  const lines: string[] = [];
+
+  lines.push('# Hoodstrut Benchmark Report');
+  lines.push('');
+  lines.push(`Generated: ${generatedAt}`);
+  lines.push('');
+
+  // Summary
+  lines.push('## Summary');
+  lines.push('');
+  lines.push('| Metric | Value |');
+  lines.push('|--------|-------|');
+  lines.push(`| Total Runs | ${aggregate.totalRuns} |`);
+  lines.push(`| Successful | ${aggregate.successfulRuns} (${formatPercent(aggregate.successRate)}) |`);
+  lines.push(`| Total Cost | ${formatCost(aggregate.totalCost)} |`);
+  lines.push(`| Total Duration | ${formatDuration(aggregate.totalDuration)} |`);
+  lines.push(`| Total Score | ${aggregate.totalScore.toLocaleString()} |`);
+  lines.push(`| Avg Score | ${Math.round(aggregate.avgScore).toLocaleString()} |`);
+  lines.push('');
+
+  // Results table
+  lines.push('## Results');
+  lines.push('');
+  lines.push('| Task | Profile | Success | Cost | Duration | Score |');
+  lines.push('|------|---------|---------|------|----------|-------|');
+
+  const sortedResults = [...results].sort((a, b) => {
+    const taskCmp = a.task.id.localeCompare(b.task.id);
+    if (taskCmp !== 0) return taskCmp;
+    return a.profile.name.localeCompare(b.profile.name);
+  });
+
+  for (const result of sortedResults) {
+    const success = result.result.success ? '✓' : '✗';
+    const cost = result.metrics ? formatCost(result.metrics.cost_usd) : '-';
+    const duration = result.metrics ? formatDuration(result.metrics.duration_seconds) : '-';
+    const score = result.score?.value?.toLocaleString() ?? '-';
+    lines.push(`| ${result.task.id} | ${result.profile.name} | ${success} | ${cost} | ${duration} | ${score} |`);
+  }
+  lines.push('');
+
+  // By Profile
+  if (profileStats.length > 0) {
+    lines.push('## By Profile');
+    lines.push('');
+
+    for (const profile of profileStats) {
+      lines.push(`### ${profile.name}`);
+      lines.push('');
+      lines.push(`- **Success Rate**: ${profile.successful}/${profile.runs} (${formatPercent(profile.successRate)})`);
+      lines.push(`- **Avg Cost**: ${formatCost(profile.avgCost)}`);
+      lines.push(`- **Total Score**: ${profile.totalScore.toLocaleString()}`);
+      lines.push(`- **Avg Score**: ${Math.round(profile.avgScore).toLocaleString()}`);
+      lines.push('');
+    }
+  }
+
+  // By Task
+  if (taskStats.length > 0) {
+    lines.push('## By Task');
+    lines.push('');
+
+    for (const task of taskStats) {
+      lines.push(`### ${task.id}`);
+      lines.push(`*${task.title}*`);
+      lines.push('');
+      lines.push(`- **Runs**: ${task.runs} (${task.successful} successful)`);
+      if (task.bestProfile) {
+        lines.push(`- **Best**: ${task.bestProfile} (${task.bestScore.toLocaleString()} pts)`);
+      }
+      if (task.worstProfile && task.worstProfile !== task.bestProfile) {
+        lines.push(`- **Worst**: ${task.worstProfile} (${task.worstScore.toLocaleString()} pts)`);
+      }
+      lines.push('');
+    }
+  }
+
+  lines.push('---');
+  lines.push('*Generated by hoodstrut v0.1.0*');
+
+  return lines.join('\n');
+}

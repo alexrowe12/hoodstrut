@@ -47,7 +47,8 @@ export const TaskSchema = z.object({
   setup_commands: z.array(z.string()).optional(),
   tags: z.array(z.string()).optional(),
   difficulty: z.enum(['easy', 'medium', 'hard', 'expert']).optional(),
-  estimated_tokens: z.number().optional(),
+  estimated_tokens: z.number().default(25000),
+  expected_time: z.number().default(150),
 });
 
 export const TokenMetricsSchema = z.object({
@@ -77,9 +78,13 @@ export const MetricsSchema = z.object({
 
 export const ScoreBreakdownSchema = z.object({
   success_bonus: z.number(),
-  token_efficiency: z.number(),
-  time_bonus: z.number(),
+  cost_score: z.number(),
+  time_score: z.number(),
   difficulty_multiplier: z.number(),
+  actual_cost: z.number(),
+  expected_cost: z.number(),
+  actual_time: z.number(),
+  expected_time: z.number(),
 });
 
 export const ScoreSchema = z.object({

@@ -766,30 +766,29 @@ ENTRYPOINT ["node", "/scripts/run-sdk.js"]
 - [x] Profile YAML generation from scanned data
 - [x] `hoodstrut profile scan` command
 
-### Phase 3: Docker Integration
-- [ ] Docker executor (build, run, cleanup)
-- [ ] Repo copying and isolation (public repos + local paths only)
-- [ ] Claude Code invocation inside container (single-shot `--print` mode)
-- [ ] Profile config injection (CLAUDE.md, settings, MCP servers)
-- [ ] Output capture and streaming (stdout, stderr, conversation)
-- [ ] Success command execution (runs in same container after Claude Code)
-- [ ] API key passed via `ANTHROPIC_API_KEY` env var from host
+### Phase 3: Docker Integration ✅
+- [x] Docker executor (build, run, cleanup)
+- [x] Repo copying and isolation (public repos + local paths only)
+- [x] Claude Code invocation inside container via Agent SDK
+- [x] Profile config injection (CLAUDE.md, settings, MCP servers)
+- [x] Output capture and streaming (stdout, stderr)
+- [x] Success command execution (runs in same container after Claude Code)
+- [x] API key passed via `ANTHROPIC_API_KEY` env var from host
 
-### Phase 4: Metrics via Agent SDK + Optional Telemetry
-- [ ] Add `@anthropic-ai/claude-agent-sdk` dependency
-- [ ] Create `src/metrics/types.ts` with TokenMetrics, RunMetrics, MetricsResult
-- [ ] Create `src/metrics/pricing.ts` with all current Claude models (easily editable)
-- [ ] Create `src/docker/sdk-runner.ts` - wrapper to run Claude via Agent SDK
-- [ ] Create `src/docker/scripts/run-sdk.ts` - TypeScript container entrypoint
-- [ ] Update `Dockerfile.runner` to include SDK and compile TS entrypoint
-- [ ] Refactor `executor.ts` to use SDK runner instead of `claude --print`
-- [ ] Extract metrics from SDK `result` message (tokens, cost, turns, model_usage)
-- [ ] Add `--telemetry <endpoint>` flag to export OTEL to user's collector
-- [ ] Add `--telemetry-headers <headers>` flag for auth headers
-- [ ] **Loud warnings** when metrics extraction fails (metrics are the point!)
-- [ ] Graceful degradation: run succeeds with `metrics: null` + warnings array
-- [ ] Update run.ts to display metrics or show warning banner
-- [ ] Tests for pricing config and metrics extraction
+### Phase 4: Metrics via Agent SDK + Optional Telemetry ✅
+- [x] Add `@anthropic-ai/claude-agent-sdk` dependency
+- [x] Create `src/metrics/types.ts` with TokenMetrics, RunMetrics, MetricsResult
+- [x] Create `src/metrics/pricing.ts` with all current Claude models (easily editable)
+- [x] Create `src/docker/scripts/run-sdk.mjs` - container entrypoint
+- [x] Update `Dockerfile.runner` to include SDK
+- [x] Extract metrics from SDK `result` message (tokens, cost, turns, model_usage)
+- [x] Add `--telemetry <endpoint>` flag to export OTEL to user's collector
+- [x] Add `--telemetry-headers <headers>` flag for auth headers
+- [x] **Loud warnings** when metrics extraction fails
+- [x] Graceful degradation: run succeeds with `metrics: null` + warnings array
+- [x] Update run.ts to display metrics or show warning banner
+- [x] Tests for pricing config and metrics extraction
+- **Known issue:** SDK `settings.model` option sometimes ignored (non-blocking)
 
 ### Phase 5: Success Determination & Results ✅
 - [x] Success determination (command exit code, pattern matching, AI judge)
@@ -801,17 +800,20 @@ ENTRYPOINT ["node", "/scripts/run-sdk.js"]
 - [x] Placeholder score (null until Phase 6)
 - **Deferred:** Structured conversation log capture (stdout proxy sufficient for MVP)
 
-### Phase 6: Scoring & Reporting
-- [ ] Scoring algorithm implementation
-- [ ] Markdown report generation
-- [ ] Comparison reports
-- [ ] Result aggregation for benchmarks
+### Phase 6: Scoring & Reporting ✅
+- [x] Scoring algorithm implementation (cost-based, with difficulty multipliers)
+- [x] Markdown report generation (`results/report.md`)
+- [x] Score backfilling for existing results
+- [x] Auto-regenerate report after each run
+- [x] Result aggregation by profile and task
+- **Deferred:** Comparison reports (moved to Phase 7)
 
 ### Phase 7: Parallel Execution & Benchmarks
 - [ ] Concurrent container execution (`--parallel N`)
 - [ ] Resource management and container pooling
 - [ ] Benchmark orchestration (multiple profiles × multiple tasks)
 - [ ] Aggregated benchmark results
+- [ ] Comparison reports (`hoodstrut report --compare`)
 
 ### Phase 8: Example Content & Polish
 - [ ] Example profiles (including one scanned from real setup)

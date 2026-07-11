@@ -1,11 +1,13 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { resolve, extname } from 'node:path';
+import { resolve, extname, dirname } from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { loadProfile } from '../../core/profile.js';
 import { loadTask } from '../../core/task.js';
 import { runContainer, buildRunnerImage } from '../../docker/index.js';
 import { evaluateSuccess } from '../../core/success.js';
+import { calculateScore } from '../../core/scorer.js';
+import { generateReport } from './report.js';
 import type { TelemetryConfig } from '../../metrics/types.js';
 import type { RunResult } from '../../core/types.js';
 
@@ -21,6 +23,13 @@ function resolveTaskPath(idOrPath: string): string {
     return resolve(idOrPath);
   }
   return resolve('./tasks', `${idOrPath}.md`);
+}
+
+function formatCost(cost: number): string {
+  if (cost < 0.01) {
+    return `$${cost.toFixed(4)}`;
+  }
+  return `$${cost.toFixed(2)}`;
 }
 
 export const runCommand = new Command('run')
@@ -176,6 +185,16 @@ export const runCommand = new Command('run')
         warnings.push(...executionResult.metrics.warnings);
       }
 
+      const score = calculateScore({
+        success: successResult.success,
+        actualCost: executionResult.metrics.success ? executionResult.metrics.metrics.cost_usd : null,
+        duration: executionResult.duration,
+        difficulty: task.difficulty,
+        estimatedTokens: task.estimated_tokens,
+        expectedTime: task.expected_time,
+        profileModel: profile.model,
+      });
+
       const runResult: RunResult = {
         id: runId,
         timestamp: new Date().toISOString(),
@@ -199,7 +218,7 @@ export const runCommand = new Command('run')
           files_created: executionResult.filesChanged.created,
           files_deleted: executionResult.filesChanged.deleted,
         },
-        score: null,
+        score,
         logs: {
           stdout: executionResult.stdout,
           stderr: executionResult.stderr,
@@ -212,6 +231,25 @@ export const runCommand = new Command('run')
         JSON.stringify(runResult, null, 2),
         'utf-8'
       );
+
+      if (score) {
+        console.log('');
+        console.log(chalk.bold('=== Score ==='));
+        console.log(chalk.cyan(`Score: ${score.value.toLocaleString()}`));
+        console.log(chalk.gray(`  Success: ${score.breakdown.success_bonus} pts`));
+        console.log(chalk.gray(`  Cost efficiency: ${score.breakdown.cost_score.toFixed(0)} pts (${formatCost(score.breakdown.actual_cost)} vs ${formatCost(score.breakdown.expected_cost)} expected)`));
+        console.log(chalk.gray(`  Time efficiency: ${score.breakdown.time_score.toFixed(0)} pts (${score.breakdown.actual_time}s vs ${score.breakdown.expected_time}s expected)`));
+        console.log(chalk.gray(`  Difficulty: ${score.breakdown.difficulty_multiplier}x`));
+      }
+
+      const resultsDir = dirname(outputDir);
+      try {
+        const reportPath = await generateReport(resultsDir);
+        console.log('');
+        console.log(chalk.gray(`Report updated: ${reportPath}`));
+      } catch {
+        // Report generation is best-effort
+      }
 
       process.exit(successResult.success ? 0 : 1);
 

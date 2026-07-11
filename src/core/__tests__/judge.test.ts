@@ -175,11 +175,9 @@ describe('evaluateWithJudge', () => {
     await evaluateWithJudge(baseInput);
 
     const callArgs = mockCreate.mock.calls[0][0];
-    expect(callArgs.model).toBe('claude-sonnet-4-20250514');
+    expect(callArgs.model).toBe('claude-sonnet-5');
     expect(callArgs.max_tokens).toBe(500);
-    expect(callArgs.thinking).toEqual({
-      type: 'enabled',
-      budget_tokens: 1024,
-    });
+    expect(callArgs.system).toBeDefined();
+    expect(callArgs.messages).toHaveLength(1);
   });
 });
