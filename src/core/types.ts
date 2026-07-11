@@ -50,13 +50,29 @@ export const TaskSchema = z.object({
   estimated_tokens: z.number().optional(),
 });
 
-export const MetricsSchema = z.object({
+export const TokenMetricsSchema = z.object({
   input_tokens: z.number(),
   output_tokens: z.number(),
+  cache_read_tokens: z.number(),
+  cache_write_tokens: z.number(),
   total_tokens: z.number(),
+});
+
+export const ModelUsageSchema = z.object({
+  input_tokens: z.number(),
+  output_tokens: z.number(),
+  cache_read_tokens: z.number(),
+  cache_write_tokens: z.number(),
+  cost_usd: z.number(),
+});
+
+export const MetricsSchema = z.object({
+  tokens: TokenMetricsSchema,
   cost_usd: z.number(),
   duration_seconds: z.number(),
   turns: z.number(),
+  model: z.string(),
+  model_usage: z.record(ModelUsageSchema),
 });
 
 export const ScoreBreakdownSchema = z.object({

@@ -1,5 +1,6 @@
 import type { Profile } from '../core/types.js';
 import type { TaskWithBody } from '../core/task.js';
+import type { MetricsResult, TelemetryConfig } from '../metrics/types.js';
 
 export interface ExecutorOptions {
   profile: Profile;
@@ -7,6 +8,7 @@ export interface ExecutorOptions {
   outputDir: string;
   verbose?: boolean;
   timeout?: number;
+  telemetry?: TelemetryConfig;
 }
 
 export interface ExecutionResult {
@@ -15,7 +17,6 @@ export interface ExecutionResult {
   duration: number;
   stdout: string;
   stderr: string;
-  otelDir: string;
   success: boolean;
   successMethod: 'command' | 'exit_code';
   filesChanged: {
@@ -23,6 +24,7 @@ export interface ExecutionResult {
     created: string[];
     deleted: string[];
   };
+  metrics: MetricsResult;
 }
 
 export interface PrepareRepoOptions {

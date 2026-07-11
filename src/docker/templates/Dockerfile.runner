@@ -1,9 +1,9 @@
 FROM node:20-slim
 
-# Install Claude Code
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude Code CLI and Agent SDK
+RUN npm install -g @anthropic-ai/claude-code @anthropic-ai/claude-agent-sdk
 
-# Install common dev tools and jq for script JSON parsing
+# Install common dev tools
 RUN apt-get update && apt-get install -y \
     git \
     python3 \
@@ -19,8 +19,10 @@ RUN git config --global user.email "hoodstrut@localhost" && \
 
 WORKDIR /workspace
 
-# Copy entrypoint script
+# Copy entrypoint scripts (both old shell and new SDK-based)
 COPY scripts/run-task.sh /run-task.sh
+COPY scripts/run-sdk.mjs /run-sdk.mjs
 RUN chmod +x /run-task.sh
 
-ENTRYPOINT ["/run-task.sh"]
+# Default to SDK-based entrypoint
+ENTRYPOINT ["node", "/run-sdk.mjs"]

@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
-import { mkdir, cp, readdir, stat } from 'node:fs/promises';
+import { mkdir, cp, readdir, stat, readFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dir as tmpDir } from 'tmp-promise';
 import type { ExecutorOptions, ExecutionResult } from './types.js';
+import type { MetricsResult, RunMetrics } from '../metrics/types.js';
 import { prepareRepo } from './repo-preparer.js';
 import { injectConfig, buildEnvVars } from './config-injector.js';
 import { createCaptureStreams, pipeWithLogging, closeCaptureStreams } from './output-capture.js';
@@ -11,6 +12,7 @@ import { createCaptureStreams, pipeWithLogging, closeCaptureStreams } from './ou
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DOCKER_IMAGE = 'hoodstrut-runner:latest';
 const DEFAULT_TIMEOUT = 300;
+const METRICS_FILENAME = '.metrics.json';
 
 export async function buildRunnerImage(force: boolean = false): Promise<string> {
   if (!force) {
@@ -48,14 +50,12 @@ async function imageExists(imageName: string): Promise<boolean> {
 }
 
 export async function runContainer(options: ExecutorOptions): Promise<ExecutionResult> {
-  const { profile, task, outputDir, verbose = false } = options;
+  const { profile, task, outputDir, verbose = false, telemetry } = options;
   const timeout = options.timeout ?? task.timeout ?? DEFAULT_TIMEOUT;
 
   await mkdir(outputDir, { recursive: true });
 
   const { path: workspaceDir, cleanup: cleanupWorkspace } = await tmpDir({ unsafeCleanup: true });
-  const otelDir = join(outputDir, 'otel');
-  const containerOtelDir = '/workspace/.otel';
 
   try {
     await prepareRepo({
@@ -68,20 +68,17 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
 
     await injectConfig(profile, workspaceDir);
 
-    await mkdir(otelDir, { recursive: true });
-
     const image = await buildRunnerImage();
 
     const startTime = Date.now();
 
-    const envVars = buildEnvVars(profile, containerOtelDir);
+    const envVars = buildEnvVars(profile, telemetry);
 
     const taskPrompt = buildTaskPrompt(task.title, task.body);
 
     const dockerArgs = buildDockerArgs({
       image,
       workspaceDir,
-      otelDir,
       envVars,
       timeout,
       setupCommands: task.setup_commands,
@@ -104,7 +101,8 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
     const success = task.success_command ? exitCode === 0 : exitCode === 0;
     const successMethod = task.success_command ? 'command' : 'exit_code';
 
-    await copyOtelLogs(profile.name, otelDir);
+    // Read metrics from the metrics file written by run-sdk.mjs
+    const metrics = await readMetricsFile(workspaceDir, duration);
 
     return {
       containerId,
@@ -112,10 +110,10 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
       duration,
       stdout: streams.stdoutPath,
       stderr: streams.stderrPath,
-      otelDir,
       success,
       successMethod,
       filesChanged,
+      metrics,
     };
   } finally {
     await cleanupWorkspace();
@@ -129,7 +127,6 @@ function buildTaskPrompt(title: string, body: string): string {
 interface DockerArgsOptions {
   image: string;
   workspaceDir: string;
-  otelDir: string;
   envVars: Record<string, string>;
   timeout: number;
   setupCommands?: string[];
@@ -143,7 +140,6 @@ function buildDockerArgs(options: DockerArgsOptions): string[] {
     'run',
     '--rm',
     '-v', `${options.workspaceDir}:/workspace`,
-    '-v', `${options.otelDir}:/workspace/.otel`,
     '--stop-timeout', String(options.timeout),
   ];
 
@@ -299,15 +295,72 @@ function computeFileChanges(
   return { modified, created, deleted };
 }
 
-async function copyOtelLogs(profileName: string, sourceOtelDir: string): Promise<void> {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const destDir = resolve(process.cwd(), 'otel_logs', profileName, timestamp);
+interface MetricsFileContent {
+  success: boolean;
+  cost_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  turns: number;
+  model: string;
+  model_usage: Record<string, {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+    cost_usd: number;
+  }>;
+  duration_ms: number;
+  error?: string;
+}
+
+async function readMetricsFile(workspaceDir: string, fallbackDuration: number): Promise<MetricsResult> {
+  const metricsPath = join(workspaceDir, METRICS_FILENAME);
+  const warnings: string[] = [];
 
   try {
-    await mkdir(destDir, { recursive: true });
-    await cp(sourceOtelDir, destDir, { recursive: true });
-  } catch {
-    // OTEL logs may not exist if Claude Code didn't produce any
+    const content = await readFile(metricsPath, 'utf-8');
+    const data = JSON.parse(content) as MetricsFileContent;
+
+    if (data.error) {
+      warnings.push(`SDK reported error: ${data.error}`);
+    }
+
+    const metrics: RunMetrics = {
+      tokens: {
+        input_tokens: data.input_tokens || 0,
+        output_tokens: data.output_tokens || 0,
+        cache_read_tokens: data.cache_read_tokens || 0,
+        cache_write_tokens: data.cache_write_tokens || 0,
+        total_tokens: (data.input_tokens || 0) + (data.output_tokens || 0),
+      },
+      cost_usd: data.cost_usd || 0,
+      duration_seconds: Math.round((data.duration_ms || 0) / 1000) || fallbackDuration,
+      turns: data.turns || 0,
+      model: data.model || 'unknown',
+      model_usage: data.model_usage || {},
+    };
+
+    // Check if we got meaningful data
+    if (metrics.tokens.total_tokens === 0 && metrics.cost_usd === 0) {
+      warnings.push('Metrics file exists but contains no token/cost data');
+      if (warnings.length > 0) {
+        return { success: false, metrics: null, warnings };
+      }
+    }
+
+    return { success: true, metrics };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    if (errorMessage.includes('ENOENT')) {
+      warnings.push('Metrics file not found - SDK may not have run correctly');
+    } else {
+      warnings.push(`Failed to parse metrics file: ${errorMessage}`);
+    }
+
+    return { success: false, metrics: null, warnings };
   }
 }
 

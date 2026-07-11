@@ -123,7 +123,7 @@ describe('config-injector', () => {
         model: 'claude-sonnet-4-20250514',
       };
 
-      const env = buildEnvVars(profile, '/workspace/.otel');
+      const env = buildEnvVars(profile);
       expect(env.ANTHROPIC_API_KEY).toBe('test-key');
     });
 
@@ -133,20 +133,48 @@ describe('config-injector', () => {
         model: 'claude-opus-4-20250514',
       };
 
-      const env = buildEnvVars(profile, '/workspace/.otel');
+      const env = buildEnvVars(profile);
       expect(env.ANTHROPIC_MODEL).toBe('claude-opus-4-20250514');
     });
 
-    it('sets OTEL env vars', () => {
+    it('sets OTEL env vars when telemetry is configured', () => {
       const profile: Profile = {
         name: 'test',
         model: 'claude-sonnet-4-20250514',
       };
 
-      const env = buildEnvVars(profile, '/workspace/.otel');
-      expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe('file:///workspace/.otel');
+      const telemetry = { endpoint: 'http://localhost:4318' };
+      const env = buildEnvVars(profile, telemetry);
+      expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe('http://localhost:4318');
       expect(env.OTEL_TRACES_EXPORTER).toBe('otlp');
       expect(env.OTEL_METRICS_EXPORTER).toBe('otlp');
+      expect(env.CLAUDE_CODE_ENABLE_TELEMETRY).toBe('1');
+    });
+
+    it('does not set OTEL env vars when telemetry is not configured', () => {
+      const profile: Profile = {
+        name: 'test',
+        model: 'claude-sonnet-4-20250514',
+      };
+
+      const env = buildEnvVars(profile);
+      expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined();
+      expect(env.OTEL_TRACES_EXPORTER).toBeUndefined();
+      expect(env.CLAUDE_CODE_ENABLE_TELEMETRY).toBeUndefined();
+    });
+
+    it('includes telemetry headers when provided', () => {
+      const profile: Profile = {
+        name: 'test',
+        model: 'claude-sonnet-4-20250514',
+      };
+
+      const telemetry = {
+        endpoint: 'http://localhost:4318',
+        headers: 'Authorization=Bearer token',
+      };
+      const env = buildEnvVars(profile, telemetry);
+      expect(env.OTEL_EXPORTER_OTLP_HEADERS).toBe('Authorization=Bearer token');
     });
 
     it('includes custom env vars from profile settings', () => {
@@ -161,7 +189,7 @@ describe('config-injector', () => {
         },
       };
 
-      const env = buildEnvVars(profile, '/workspace/.otel');
+      const env = buildEnvVars(profile);
       expect(env.DEBUG).toBe('true');
       expect(env.NODE_ENV).toBe('test');
     });

@@ -5,6 +5,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { loadProfile } from '../../core/profile.js';
 import { loadTask } from '../../core/task.js';
 import { runContainer, buildRunnerImage } from '../../docker/index.js';
+import type { TelemetryConfig } from '../../metrics/types.js';
 
 function resolveProfilePath(nameOrPath: string): string {
   if (extname(nameOrPath) === '.yaml' || extname(nameOrPath) === '.yml') {
@@ -28,6 +29,8 @@ export const runCommand = new Command('run')
   .option('-v, --verbose', 'Show detailed output')
   .option('--timeout <seconds>', 'Override timeout in seconds', parseInt)
   .option('--build', 'Force rebuild of Docker image')
+  .option('--telemetry <endpoint>', 'Export OTEL telemetry to endpoint (e.g., http://localhost:4318)')
+  .option('--telemetry-headers <headers>', 'OTEL headers (e.g., "Authorization=Bearer token")')
   .action(async (options) => {
     try {
       if (!process.env.ANTHROPIC_API_KEY) {
@@ -58,6 +61,16 @@ export const runCommand = new Command('run')
         await buildRunnerImage(true);
       }
 
+      // Build telemetry config if endpoint provided
+      let telemetry: TelemetryConfig | undefined;
+      if (options.telemetry) {
+        telemetry = {
+          endpoint: options.telemetry,
+          headers: options.telemetryHeaders,
+        };
+        console.log(chalk.blue(`Telemetry: exporting to ${options.telemetry}`));
+      }
+
       console.log(chalk.blue('Starting execution in Docker container...'));
       console.log(chalk.gray(`Output directory: ${outputDir}`));
 
@@ -67,6 +80,7 @@ export const runCommand = new Command('run')
         outputDir,
         verbose: options.verbose,
         timeout: options.timeout,
+        telemetry,
       });
 
       console.log('');
@@ -81,6 +95,30 @@ export const runCommand = new Command('run')
 
       console.log(chalk.gray(`Duration: ${result.duration}s`));
       console.log(chalk.gray(`Success method: ${result.successMethod}`));
+
+      // Display metrics or warning
+      console.log('');
+      if (result.metrics.success) {
+        const m = result.metrics.metrics;
+        console.log(chalk.bold('=== Metrics ==='));
+        console.log(chalk.cyan(`Model: ${m.model}`));
+        console.log(chalk.cyan(`Tokens: ${m.tokens.total_tokens.toLocaleString()} (${m.tokens.input_tokens.toLocaleString()} in / ${m.tokens.output_tokens.toLocaleString()} out)`));
+        if (m.tokens.cache_read_tokens > 0 || m.tokens.cache_write_tokens > 0) {
+          console.log(chalk.cyan(`Cache: ${m.tokens.cache_read_tokens.toLocaleString()} read / ${m.tokens.cache_write_tokens.toLocaleString()} write`));
+        }
+        console.log(chalk.cyan(`Cost: $${m.cost_usd.toFixed(4)}`));
+        console.log(chalk.cyan(`Turns: ${m.turns}`));
+      } else {
+        // LOUD WARNING - metrics are the whole point!
+        console.log(chalk.bgYellow.black(' ⚠️  WARNING: METRICS EXTRACTION FAILED '));
+        console.log('');
+        for (const warning of result.metrics.warnings) {
+          console.log(chalk.yellow(`  • ${warning}`));
+        }
+        console.log('');
+        console.log(chalk.yellow('Token counts, cost, and scoring will not be available.'));
+        console.log(chalk.yellow('This may indicate an issue with the Agent SDK or container setup.'));
+      }
 
       if (result.filesChanged.created.length > 0) {
         console.log(chalk.green(`Files created: ${result.filesChanged.created.length}`));
@@ -111,7 +149,6 @@ export const runCommand = new Command('run')
 
       console.log('');
       console.log(chalk.gray(`Logs: ${outputDir}`));
-      console.log(chalk.gray(`OTEL: ${result.otelDir}`));
 
       const summary = {
         id: runId,
@@ -133,10 +170,11 @@ export const runCommand = new Command('run')
           duration: result.duration,
           filesChanged: result.filesChanged,
         },
+        metrics: result.metrics.success ? result.metrics.metrics : null,
+        metrics_warnings: result.metrics.success ? [] : result.metrics.warnings,
         logs: {
           stdout: result.stdout,
           stderr: result.stderr,
-          otel: result.otelDir,
         },
       };
 

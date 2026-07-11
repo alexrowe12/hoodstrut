@@ -1,6 +1,7 @@
 import { writeFile, mkdir, cp } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Profile } from '../core/types.js';
+import type { TelemetryConfig } from '../metrics/types.js';
 
 export async function injectConfig(profile: Profile, workspaceDir: string): Promise<void> {
   await Promise.all([
@@ -83,7 +84,7 @@ async function injectSkills(profile: Profile, workspaceDir: string): Promise<voi
   }
 }
 
-export function buildEnvVars(profile: Profile, otelDir: string): Record<string, string> {
+export function buildEnvVars(profile: Profile, telemetry?: TelemetryConfig): Record<string, string> {
   const env: Record<string, string> = {};
 
   if (process.env.ANTHROPIC_API_KEY) {
@@ -94,9 +95,24 @@ export function buildEnvVars(profile: Profile, otelDir: string): Record<string, 
     env.ANTHROPIC_MODEL = profile.model;
   }
 
-  env.OTEL_EXPORTER_OTLP_ENDPOINT = `file://${otelDir}`;
-  env.OTEL_TRACES_EXPORTER = 'otlp';
-  env.OTEL_METRICS_EXPORTER = 'otlp';
+  // Add telemetry env vars if telemetry is configured
+  if (telemetry) {
+    env.CLAUDE_CODE_ENABLE_TELEMETRY = '1';
+    env.CLAUDE_CODE_ENHANCED_TELEMETRY_BETA = '1';
+    env.OTEL_TRACES_EXPORTER = 'otlp';
+    env.OTEL_METRICS_EXPORTER = 'otlp';
+    env.OTEL_LOGS_EXPORTER = 'otlp';
+    env.OTEL_EXPORTER_OTLP_PROTOCOL = 'http/protobuf';
+    env.OTEL_EXPORTER_OTLP_ENDPOINT = telemetry.endpoint;
+    // Flush quickly for short-lived runs
+    env.OTEL_METRIC_EXPORT_INTERVAL = '1000';
+    env.OTEL_LOGS_EXPORT_INTERVAL = '1000';
+    env.OTEL_TRACES_EXPORT_INTERVAL = '1000';
+
+    if (telemetry.headers) {
+      env.OTEL_EXPORTER_OTLP_HEADERS = telemetry.headers;
+    }
+  }
 
   if (profile.settings?.env) {
     Object.assign(env, profile.settings.env);

@@ -250,6 +250,15 @@ hoodstrut run \
   --task ./tasks/my-task.md \
   --output ./results/run-001 \
   --verbose
+
+# With OTEL telemetry export to Jaeger
+hoodstrut run --profile my-setup --task my-task \
+  --telemetry http://localhost:4318
+
+# With OTEL telemetry to Honeycomb
+hoodstrut run --profile my-setup --task my-task \
+  --telemetry https://api.honeycomb.io:443 \
+  --telemetry-headers "x-honeycomb-team=YOUR_API_KEY"
 ```
 
 ### `hoodstrut benchmark`
@@ -445,10 +454,13 @@ estimated_tokens: number      # Expected token usage (for scoring baseline)
   "metrics": {
     "input_tokens": 15420,
     "output_tokens": 8230,
+    "cache_read_tokens": 5000,
+    "cache_write_tokens": 2000,
     "total_tokens": 23650,
     "cost_usd": 0.142,
     "duration_seconds": 87,
-    "turns": 12
+    "turns": 12,
+    "model": "claude-sonnet-4-20250514"
   },
   "result": {
     "success": true,
@@ -648,64 +660,86 @@ The file-based storage is causing issues at scale. Migrate to SQLite.
 
 ---
 
-## OTEL-Based Metrics Extraction
+## Metrics & Telemetry Architecture
 
-Claude Code supports OpenTelemetry (OTEL) for observability. We leverage this to extract precise token metrics without parsing fragile CLI output.
+### Primary: Agent SDK for Metrics
 
-### Configuration
+All runs use the `@anthropic-ai/claude-agent-sdk` to execute Claude Code. The SDK streams structured messages, and the final `result` message includes complete metrics:
 
-Set these env vars when invoking Claude Code inside the container:
+```typescript
+// From SDK result message
+{
+  total_cost_usd: 0.142,
+  usage: {
+    input_tokens: 15420,
+    output_tokens: 8230,
+    cache_read_input_tokens: 5000,
+    cache_creation_input_tokens: 2000,
+  },
+  modelUsage: {
+    'claude-sonnet-4-20250514': {
+      inputTokens: 15420,
+      outputTokens: 8230,
+      cacheReadInputTokens: 5000,
+      cacheCreationInputTokens: 2000,
+      costUSD: 0.142,
+    }
+  }
+}
+```
+
+This approach is reliable, structured, and requires no file parsing.
+
+### Optional: OTEL Telemetry Export
+
+For users who want detailed traces/spans in their observability backend (Honeycomb, Datadog, Grafana, Jaeger), use the `--telemetry` flag:
 
 ```bash
-OTEL_EXPORTER_OTLP_ENDPOINT=file:///workspace/.otel
-# Or use a file-based exporter
-OTEL_TRACES_EXPORTER=otlp
-OTEL_METRICS_EXPORTER=otlp
+# Export to local Jaeger
+hoodstrut run -p my-profile -t my-task \
+  --telemetry http://localhost:4318
+
+# Export to Honeycomb
+hoodstrut run -p my-profile -t my-task \
+  --telemetry https://api.honeycomb.io:443 \
+  --telemetry-headers "x-honeycomb-team=YOUR_API_KEY"
 ```
 
-### Log Storage Structure
+This sets the following env vars in the container:
+- `CLAUDE_CODE_ENABLE_TELEMETRY=1`
+- `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1`
+- `OTEL_TRACES_EXPORTER=otlp`
+- `OTEL_METRICS_EXPORTER=otlp`
+- `OTEL_LOGS_EXPORTER=otlp`
+- `OTEL_EXPORTER_OTLP_ENDPOINT=<user-provided>`
 
-```
-otel_logs/
-├── aggressive-coder/
-│   ├── 2025-01-15T10-30-00Z/
-│   │   ├── traces.json
-│   │   └── metrics.json
-│   └── 2025-01-15T11-45-00Z/
-│       └── ...
-└── conservative-coder/
-    └── ...
-```
+OTEL telemetry provides:
+- `claude_code.interaction` spans for each turn
+- `claude_code.llm_request` spans with latency and tokens
+- `claude_code.tool` spans for tool invocations
+- Metrics counters for tokens, cost, sessions
 
-### Metrics Extraction
-
-Parse OTEL spans to extract:
-- **Token counts**: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`
-- **Timing**: span durations for each API call
-- **Model info**: which model was actually used
-- **Turn count**: number of conversation turns
-
-The extraction logic (Phase 4) can be deterministic JSON parsing since OTEL exports structured data.
+**Note:** The `--telemetry` flag is for observability export only. Metrics extraction always uses the SDK response stream, regardless of this flag.
 
 ---
 
 ## Docker Execution Flow
 
 1. **Prepare**: Copy local repo into temp directory (public URLs via git clone, local paths via copy)
-2. **Build**: Create Docker image with Claude Code installed
-3. **Configure**: Inject profile settings (system prompt, MCP, skills, OTEL env vars)
-4. **Execute**: Run Claude Code in single-shot `--print` mode with task prompt
-5. **Capture**: Stream stdout/stderr to files, collect OTEL logs
+2. **Build**: Create Docker image with Claude Code CLI + Agent SDK
+3. **Configure**: Inject profile settings (system prompt, MCP, skills, telemetry env vars if --telemetry)
+4. **Execute**: Run Claude Code via Agent SDK `query()` with task prompt
+5. **Capture**: Stream stdout/stderr to files, collect metrics from SDK response
 6. **Verify**: Run success_command in same container
-7. **Cleanup**: Remove container, copy OTEL logs to `otel_logs/<profile>/<timestamp>/`, preserve results
+7. **Cleanup**: Remove container, preserve results with metrics
 
-### Dockerfile.runner (Simplified)
+### Dockerfile.runner
 
 ```dockerfile
 FROM node:20-slim
 
-# Install Claude Code
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude Code CLI and Agent SDK
+RUN npm install -g @anthropic-ai/claude-code @anthropic-ai/claude-agent-sdk
 
 # Install common dev tools
 RUN apt-get update && apt-get install -y git python3 make gcc g++
@@ -713,11 +747,11 @@ RUN apt-get update && apt-get install -y git python3 make gcc g++
 # Working directory
 WORKDIR /workspace
 
-# Entry script
-COPY scripts/run-task.sh /run-task.sh
-RUN chmod +x /run-task.sh
+# TypeScript entrypoint that uses SDK for metrics
+COPY scripts/run-sdk.ts /run-sdk.ts
+RUN npx tsc /run-sdk.ts --outDir /scripts --esModuleInterop --module NodeNext --moduleResolution NodeNext
 
-ENTRYPOINT ["/run-task.sh"]
+ENTRYPOINT ["node", "/scripts/run-sdk.js"]
 ```
 
 ---
@@ -749,13 +783,21 @@ ENTRYPOINT ["/run-task.sh"]
 - [ ] Success command execution (runs in same container after Claude Code)
 - [ ] API key passed via `ANTHROPIC_API_KEY` env var from host
 
-### Phase 4: OTEL Metrics Extraction
-- [ ] Configure Claude Code OTEL env vars to output telemetry
-- [ ] Capture OTEL logs to `otel_logs/<profile-name>/<timestamp>/`
-- [ ] Parse OTEL spans for token breakdown (input, output, cache hits)
-- [ ] Extract timing metrics from spans
-- [ ] Cost calculation based on model + token counts
-- [ ] Integrate metrics into run results JSON
+### Phase 4: Metrics via Agent SDK + Optional Telemetry
+- [ ] Add `@anthropic-ai/claude-agent-sdk` dependency
+- [ ] Create `src/metrics/types.ts` with TokenMetrics, RunMetrics, MetricsResult
+- [ ] Create `src/metrics/pricing.ts` with all current Claude models (easily editable)
+- [ ] Create `src/docker/sdk-runner.ts` - wrapper to run Claude via Agent SDK
+- [ ] Create `src/docker/scripts/run-sdk.ts` - TypeScript container entrypoint
+- [ ] Update `Dockerfile.runner` to include SDK and compile TS entrypoint
+- [ ] Refactor `executor.ts` to use SDK runner instead of `claude --print`
+- [ ] Extract metrics from SDK `result` message (tokens, cost, turns, model_usage)
+- [ ] Add `--telemetry <endpoint>` flag to export OTEL to user's collector
+- [ ] Add `--telemetry-headers <headers>` flag for auth headers
+- [ ] **Loud warnings** when metrics extraction fails (metrics are the point!)
+- [ ] Graceful degradation: run succeeds with `metrics: null` + warnings array
+- [ ] Update run.ts to display metrics or show warning banner
+- [ ] Tests for pricing config and metrics extraction
 
 ### Phase 5: Success Determination & Results
 - [ ] Success determination (command exit code, pattern matching, AI judge)
