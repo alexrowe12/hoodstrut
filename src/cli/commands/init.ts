@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { mkdir, writeFile, cp, access } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createInterface } from 'node:readline/promises';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // dist/cli/commands/init.js -> package root is three levels up. This resolves
@@ -23,9 +24,9 @@ const EXAMPLE_PATHS: Array<[string, string]> = [
 
 const ENV_EXAMPLE = `# Copy this file to .env and fill in your key.
 #
-# NOTE: this file has no \`export\`, so \`source .env\` alone will NOT pass the
-# key to node. Load it with:
-#     set -a && source .env && set +a
+# hoodstrut loads .env from the current directory automatically, so this is all
+# the setup you need — no \`source\`/\`export\` required. A real environment
+# variable of the same name still takes precedence over this file.
 ANTHROPIC_API_KEY=
 `;
 
@@ -35,6 +36,25 @@ async function exists(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Interactively ask for the API key. Returns the trimmed key, or null when
+ * skipped or when stdin isn't a terminal (so CI / piped invocations never hang).
+ */
+async function promptApiKey(): Promise<string | null> {
+  if (!process.stdin.isTTY) {
+    return null;
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question(
+      'Enter your ANTHROPIC_API_KEY (leave blank to skip): '
+    );
+    return answer.trim() || null;
+  } finally {
+    rl.close();
   }
 }
 
@@ -60,12 +80,28 @@ export const initCommand = new Command('init')
     }
 
     // 2. .env.example (never clobber an existing one).
-    const envPath = join(cwd, '.env.example');
-    if (await exists(envPath)) {
+    const envExamplePath = join(cwd, '.env.example');
+    if (await exists(envExamplePath)) {
       skipped.push('.env.example');
     } else {
-      await writeFile(envPath, ENV_EXAMPLE);
+      await writeFile(envExamplePath, ENV_EXAMPLE);
       created.push('.env.example');
+    }
+
+    // 2b. Offer to capture the key straight into a real .env. hoodstrut loads
+    // .env itself at run time, so this is all the setup a user needs — no
+    // `set -a && source .env && set +a` dance required.
+    const dotenvPath = join(cwd, '.env');
+    let dotenvReady = await exists(dotenvPath);
+    if (dotenvReady) {
+      skipped.push('.env');
+    } else {
+      const key = await promptApiKey();
+      if (key) {
+        await writeFile(dotenvPath, `ANTHROPIC_API_KEY=${key}\n`);
+        created.push('.env');
+        dotenvReady = true;
+      }
     }
 
     // 3. Example content.
@@ -107,15 +143,21 @@ export const initCommand = new Command('init')
     }
 
     console.log(chalk.dim('\nNext steps:'));
-    console.log(chalk.dim('  1. cp .env.example .env  &&  add your ANTHROPIC_API_KEY'));
-    console.log(chalk.dim('  2. set -a && source .env && set +a'));
+    // hoodstrut auto-loads .env, so the only prerequisite is that the key
+    // exists there. Only nudge the user about it when it isn't set up yet.
+    let step = 1;
+    if (!dotenvReady) {
+      console.log(
+        chalk.dim(`  ${step++}. cp .env.example .env  &&  add your ANTHROPIC_API_KEY`)
+      );
+    }
     if (options.withExamples) {
       console.log(
         chalk.dim(
-          '  3. hoodstrut run --profile profiles/examples/default.yaml --task tasks/examples/fix-todo-persistence.md'
+          `  ${step++}. hoodstrut run --profile profiles/examples/default.yaml --task tasks/examples/fix-todo-persistence.md`
         )
       );
     } else {
-      console.log(chalk.dim('  3. hoodstrut init --with-examples   # to add runnable examples'));
+      console.log(chalk.dim(`  ${step++}. hoodstrut init --with-examples   # to add runnable examples`));
     }
   });

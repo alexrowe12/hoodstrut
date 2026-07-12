@@ -18,13 +18,9 @@ hypothetical one.
 - **Node.js ≥ 20**
 - **Docker** — Docker Desktop (or a compatible engine) must be running. Every
   run executes in a throwaway container.
-- **An Anthropic API key** exported as `ANTHROPIC_API_KEY`.
-
-> **Gotcha — loading `.env`:** a plain `.env` has no `export`, so `source .env`
-> alone will **not** pass the key to node. Load it like this:
-> ```bash
-> set -a && source .env && set +a
-> ```
+- **An Anthropic API key** as `ANTHROPIC_API_KEY`. hoodstrut reads it from a
+  `.env` file in the current directory automatically (or from a real
+  environment variable, which takes precedence) — no `source`/`export` needed.
 
 > **Gotcha — running tests:** `npm test` runs vitest in **watch** mode (never
 > exits). Use `npm run test:run` for a one-shot run.
@@ -50,12 +46,12 @@ Without `npm link`, invoke it as `node dist/cli/index.js <command>`.
 ## Quickstart (the wow demo)
 
 ```bash
-# 1. Scaffold a project with runnable examples in the current directory
+# 1. Scaffold a project with runnable examples in the current directory.
+#    init prompts for your ANTHROPIC_API_KEY and writes it to .env for you.
 hoodstrut init --with-examples
 
-# 2. Add your key
+# 2. (only if you skipped the prompt) add your key by hand
 cp .env.example .env        # then edit .env and set ANTHROPIC_API_KEY
-set -a && source .env && set +a
 
 # 3. Optional: turn your real Claude Code setup into a profile
 hoodstrut profile scan --name my-setup
@@ -79,7 +75,9 @@ fixes it. A no-op run **fails** — the benchmark actually discriminates.
 
 ### `hoodstrut init`
 Scaffold `profiles/`, `tasks/`, `benchmarks/`, `results/`, and a `.env.example`.
-Never overwrites existing files.
+When run in an interactive terminal it also prompts for your `ANTHROPIC_API_KEY`
+and writes it to `.env` (leave the prompt blank to skip; it's skipped
+automatically when stdin isn't a TTY). Never overwrites existing files.
 
 | Flag | Description |
 |------|-------------|
@@ -270,8 +268,9 @@ adds OTEL export for your own observability backend; it does not affect metrics.
 - **`metrics: null` / "Metrics file not found"** — the SDK didn't produce usage
   data. Common cause: the profile's `model` is one your API key can't access.
   Check `model` against `src/metrics/pricing.ts` and your key's entitlements.
-- **"Not logged in" / auth errors** — `ANTHROPIC_API_KEY` isn't in the
-  environment. Re-run `set -a && source .env && set +a`.
+- **"Not logged in" / auth errors** — `ANTHROPIC_API_KEY` isn't set. Make sure
+  it's in a `.env` file in the directory you're running from (hoodstrut loads it
+  automatically), or exported in your shell.
 - **Docker errors** — ensure the daemon is running (`docker ps`). Use `--build`
   to force an image rebuild after changing the Docker assets.
 - **Leftover containers** — hoodstrut names containers `hoodstrut-*` and

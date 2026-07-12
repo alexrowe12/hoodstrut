@@ -27,4 +27,3 @@ results/
 # Environment
 .env
 .env.local
-.env

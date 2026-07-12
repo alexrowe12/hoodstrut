@@ -6,6 +6,7 @@ import { loadProfile } from '../../core/profile.js';
 import { loadTask } from '../../core/task.js';
 import { buildRunnerImage } from '../../docker/index.js';
 import { executeRun, resolveProfilePath, resolveTaskPath } from '../../core/run-pipeline.js';
+import { loadDotenv } from '../../core/dotenv.js';
 import { generateReport } from './report.js';
 import type { TelemetryConfig } from '../../metrics/types.js';
 
@@ -28,8 +29,15 @@ export const runCommand = new Command('run')
   .option('--telemetry-headers <headers>', 'OTEL headers (e.g., "Authorization=Bearer token")')
   .action(async (options) => {
     try {
+      // Pull the key (and anything else) from a local .env so users don't have
+      // to `set -a && source .env && set +a` themselves.
+      loadDotenv();
+
       if (!process.env.ANTHROPIC_API_KEY) {
         console.error(chalk.red('Error: ANTHROPIC_API_KEY environment variable is required'));
+        console.error(
+          chalk.dim('  Set it in the environment, or add it to a .env file in this directory')
+        );
         process.exit(1);
       }
 

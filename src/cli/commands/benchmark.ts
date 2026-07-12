@@ -4,6 +4,7 @@ import { readdir } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { BenchmarkConfigSchema, type BenchmarkConfig } from '../../core/types.js';
 import { loadBenchmarkConfig, runBenchmark } from '../../core/benchmark.js';
+import { loadDotenv } from '../../core/dotenv.js';
 import { listTasks } from '../../core/task.js';
 import { generateReport } from './report.js';
 import { formatCost, formatDuration } from '../../output/markdown.js';
@@ -41,8 +42,15 @@ export const benchmarkCommand = new Command('benchmark')
   .option('--telemetry-headers <headers>', 'OTEL headers (e.g., "Authorization=Bearer token")')
   .action(async (options) => {
     try {
+      // Pull the key (and anything else) from a local .env so users don't have
+      // to `set -a && source .env && set +a` themselves.
+      loadDotenv();
+
       if (!process.env.ANTHROPIC_API_KEY) {
         console.error(chalk.red('Error: ANTHROPIC_API_KEY environment variable is required'));
+        console.error(
+          chalk.dim('  Set it in the environment, or add it to a .env file in this directory')
+        );
         process.exit(1);
       }
 
