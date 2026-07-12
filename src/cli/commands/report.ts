@@ -5,6 +5,7 @@ import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { RunResultSchema, type RunResult } from '../../core/types.js';
 import { calculateScore } from '../../core/scorer.js';
 import { generateAggregateReport } from '../../output/markdown.js';
+import { renderReportToTerminal } from '../../output/terminal.js';
 import { generateComparisonReport } from '../../output/comparison.js';
 
 async function loadRunResults(resultsDir: string): Promise<RunResult[]> {
@@ -44,6 +45,12 @@ function backfillScore(result: RunResult): RunResult {
   });
 
   return { ...result, score };
+}
+
+/** Load every run in a results directory with scores backfilled where missing. */
+export async function loadScoredResults(resultsDir: string): Promise<RunResult[]> {
+  const results = await loadRunResults(resultsDir);
+  return results.map(backfillScore);
 }
 
 export async function generateReport(resultsDir: string): Promise<string> {
@@ -127,9 +134,8 @@ export const reportCommand = new Command('report')
       } else {
         const reportPath = resolve(absPath, 'report.md');
         await writeFile(reportPath, report, 'utf-8');
+        console.log(renderReportToTerminal(scoredResults));
         console.log(chalk.green(`Report written to ${reportPath}`));
-        console.log('');
-        console.log(report);
       }
 
     } catch (error) {

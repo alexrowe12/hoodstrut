@@ -1,5 +1,5 @@
 import type { RunResult } from '../core/types.js';
-import { formatCost, formatPercent } from './markdown.js';
+import { formatCost, formatPercent } from './format.js';
 
 export interface ComparisonSide {
   label: string;

@@ -143,8 +143,11 @@ hoodstrut task validate ./my-task.md       # validate against the schema
 hoodstrut report ./results                          # (re)generate report.md
 hoodstrut report ./results/benchmark-x --compare ./results/benchmark-y
 ```
-`--compare` writes a side-by-side `comparison.md` with signed deltas
-(success rate, cost, tokens, score).
+Prints a colorized **score matrix** (tasks × profiles, both ranked by score) and
+a profile leaderboard to the terminal, and writes the same view to `report.md`
+(with a winning-profile callout and a runs table ranked by score). `--compare`
+writes a side-by-side `comparison.md` with signed deltas (success rate, cost,
+tokens, score).
 
 ---
 

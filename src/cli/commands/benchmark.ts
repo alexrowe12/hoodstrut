@@ -6,8 +6,9 @@ import { BenchmarkConfigSchema, type BenchmarkConfig } from '../../core/types.js
 import { loadBenchmarkConfig, runBenchmark } from '../../core/benchmark.js';
 import { loadDotenv } from '../../core/dotenv.js';
 import { listTasks } from '../../core/task.js';
-import { generateReport } from './report.js';
-import { formatCost, formatDuration } from '../../output/markdown.js';
+import { generateReport, loadScoredResults } from './report.js';
+import { formatCost, formatDuration } from '../../output/format.js';
+import { renderReportToTerminal } from '../../output/terminal.js';
 import type { TelemetryConfig } from '../../metrics/types.js';
 
 /** Top-level ./profiles/*.yaml only — examples/ subdirectory is opt-in by path. */
@@ -120,21 +121,22 @@ export const benchmarkCommand = new Command('benchmark')
         },
       });
 
-      console.log(chalk.gray(`Output: ${benchmarkDir}`));
-
       let reportPath: string | null = null;
       try {
         reportPath = await generateReport(benchmarkDir);
+        const scored = await loadScoredResults(benchmarkDir);
+        console.log(renderReportToTerminal(scored));
       } catch {
-        // Report generation is best-effort
+        // Report generation is best-effort; fall back to the plain summary below.
       }
 
-      console.log('');
-      console.log(chalk.bold('=== Benchmark Complete ==='));
-      console.log(`Runs: ${summary.total_runs} (${chalk.green(`${summary.successful_runs} passed`)}, ${chalk.red(`${summary.failed_runs} failed`)}, ${summary.errored_runs} errored)`);
-      console.log(`Cost: ${formatCost(summary.total_cost_usd)}   Duration: ${formatDuration(summary.duration_seconds)}   Total Score: ${summary.total_score.toLocaleString()}`);
+      if (summary.errored_runs > 0) {
+        console.log(chalk.yellow(`  ⚠ ${summary.errored_runs} run(s) errored and are not scored above.`));
+        console.log('');
+      }
+      console.log(chalk.dim(`  Output:  ${benchmarkDir}`));
       if (reportPath) {
-        console.log(chalk.gray(`Report: ${reportPath}`));
+        console.log(chalk.dim(`  Report:  ${reportPath}`));
       }
 
       // Task failures are benchmark data; exit 1 only if nothing ran at all
