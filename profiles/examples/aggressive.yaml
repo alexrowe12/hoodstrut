@@ -1,6 +1,6 @@
 name: aggressive
 description: "High effort, minimal guardrails configuration"
-model: claude-sonnet-4-20250514
+model: claude-sonnet-5
 effort: high
 system_prompt: |
   You are an expert software engineer. Be concise and direct.

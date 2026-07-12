@@ -75,9 +75,12 @@ async function main() {
       allowDangerouslySkipPermissions: true,
     };
 
-    // Pass model from env if specified
+    // Pass model from env if specified. Use the top-level `model` option — the
+    // SDK selects the model from Options.model ("Claude model to use"), NOT from
+    // settings.model. Setting it under `settings` was silently ignored, which is
+    // why opus-configured profiles were observed running on the default model.
     if (process.env.ANTHROPIC_MODEL) {
-      sdkOptions.settings = { model: process.env.ANTHROPIC_MODEL };
+      sdkOptions.model = process.env.ANTHROPIC_MODEL;
       console.log(`Using model: ${process.env.ANTHROPIC_MODEL}`);
     }
 

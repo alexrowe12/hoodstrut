@@ -26,7 +26,7 @@ describe('generateProfile', () => {
     const { profile, yaml } = generateProfile(baseScanResult, 'test-profile');
 
     expect(profile.name).toBe('test-profile');
-    expect(profile.model).toBe('claude-sonnet-4-20250514');
+    expect(profile.model).toBe('claude-sonnet-5');
     expect(profile.effort).toBe('medium');
     expect(profile.source).toBe('scanned');
     expect(yaml).toContain('name: test-profile');
@@ -47,7 +47,7 @@ describe('generateProfile', () => {
 
     const { profile } = generateProfile(scanResult, 'test');
 
-    expect(profile.model).toBe('claude-opus-4-20250514');
+    expect(profile.model).toBe('claude-opus-4-8');
     expect(profile.effort).toBe('high');
   });
 

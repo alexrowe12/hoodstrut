@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdir, cp, readdir, stat, readFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +17,36 @@ const METRICS_FILENAME = '.metrics.json';
 
 // Share one in-flight build across concurrent callers (parallel runs)
 let inFlightBuild: Promise<string> | null = null;
+
+// Names of containers currently running, so we can force-remove them if the
+// host process is interrupted (Ctrl-C during a `benchmark --parallel N` would
+// otherwise orphan every in-flight `--rm` container).
+const activeContainers = new Set<string>();
+let signalHandlersInstalled = false;
+
+function installSignalHandlers(): void {
+  if (signalHandlersInstalled) return;
+  signalHandlersInstalled = true;
+
+  const cleanupAndExit = (signal: NodeJS.Signals) => {
+    for (const name of activeContainers) {
+      // Synchronous best-effort removal — the handler may be the last thing
+      // that runs before the process exits.
+      spawnSync('docker', ['rm', '-f', name], { stdio: 'ignore' });
+    }
+    activeContainers.clear();
+    // Re-raise with the default disposition so the exit code reflects the signal.
+    process.removeAllListeners(signal);
+    process.kill(process.pid, signal);
+  };
+
+  process.once('SIGINT', () => cleanupAndExit('SIGINT'));
+  process.once('SIGTERM', () => cleanupAndExit('SIGTERM'));
+}
+
+function forceRemoveContainer(name: string): void {
+  spawnSync('docker', ['rm', '-f', name], { stdio: 'ignore' });
+}
 
 export async function buildRunnerImage(force: boolean = false): Promise<string> {
   if (inFlightBuild) {
@@ -72,6 +103,9 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
 
   await mkdir(outputDir, { recursive: true });
 
+  installSignalHandlers();
+  const containerName = `hoodstrut-${randomUUID().slice(0, 8)}`;
+
   const { path: workspaceDir, cleanup: cleanupWorkspace } = await tmpDir({ unsafeCleanup: true });
 
   try {
@@ -95,6 +129,7 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
 
     const dockerArgs = buildDockerArgs({
       image,
+      containerName,
       workspaceDir,
       envVars,
       timeout,
@@ -106,7 +141,14 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
 
     const streams = await createCaptureStreams(outputDir, verbose);
 
-    const { exitCode, containerId } = await runDockerContainer(dockerArgs, streams, verbose, timeout);
+    activeContainers.add(containerName);
+    const { exitCode, containerId } = await runDockerContainer(
+      dockerArgs,
+      containerName,
+      streams,
+      verbose,
+      timeout
+    );
 
     await closeCaptureStreams(streams);
 
@@ -134,6 +176,10 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
       metrics,
     };
   } finally {
+    // Belt-and-suspenders: `--rm` handles the happy path, but a timed-out or
+    // wedged container may survive. Force-remove and deregister.
+    forceRemoveContainer(containerName);
+    activeContainers.delete(containerName);
     await cleanupWorkspace();
   }
 }
@@ -144,6 +190,7 @@ function buildTaskPrompt(title: string, body: string): string {
 
 interface DockerArgsOptions {
   image: string;
+  containerName: string;
   workspaceDir: string;
   envVars: Record<string, string>;
   timeout: number;
@@ -157,6 +204,7 @@ function buildDockerArgs(options: DockerArgsOptions): string[] {
   const args = [
     'run',
     '--rm',
+    '--name', options.containerName,
     '-v', `${options.workspaceDir}:/workspace`,
     '--stop-timeout', String(options.timeout),
   ];
@@ -190,6 +238,7 @@ interface ContainerResult {
 
 async function runDockerContainer(
   args: string[],
+  containerName: string,
   streams: Awaited<ReturnType<typeof createCaptureStreams>>,
   verbose: boolean,
   timeout: number
@@ -199,20 +248,20 @@ async function runDockerContainer(
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    let containerId = `docker-${proc.pid}`;
-
     pipeWithLogging(proc.stdout, streams.stdoutStream, verbose, '[stdout]');
     pipeWithLogging(proc.stderr, streams.stderrStream, verbose, '[stderr]');
 
     const timeoutId = globalThis.setTimeout(() => {
-      proc.kill('SIGTERM');
+      // Kill the container by name — killing the `docker run` client alone does
+      // NOT stop the container, so with `--rm` it would keep running orphaned.
+      spawn('docker', ['kill', containerName], { stdio: 'ignore' });
     }, timeout * 1000);
 
     proc.on('close', (code) => {
       globalThis.clearTimeout(timeoutId);
       resolve({
         exitCode: code ?? 1,
-        containerId,
+        containerId: containerName,
       });
     });
 

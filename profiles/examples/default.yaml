@@ -1,4 +1,4 @@
 name: default
 description: "Default Claude Code configuration for benchmarking"
-model: claude-sonnet-4-20250514
+model: claude-sonnet-5
 effort: medium

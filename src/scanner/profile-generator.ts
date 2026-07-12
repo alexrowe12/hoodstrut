@@ -21,13 +21,13 @@ function mapEffortLevel(effort?: string): 'low' | 'medium' | 'high' {
 }
 
 function normalizeModel(model?: string): string {
-  if (!model) return 'claude-sonnet-4-20250514';
+  if (!model) return 'claude-sonnet-5';
 
   // Map shorthand model names to full identifiers
   const modelMap: Record<string, string> = {
-    'opus': 'claude-opus-4-20250514',
-    'sonnet': 'claude-sonnet-4-20250514',
-    'haiku': 'claude-haiku-4-20250514',
+    'opus': 'claude-opus-4-8',
+    'sonnet': 'claude-sonnet-5',
+    'haiku': 'claude-haiku-4-5-20251001',
   };
 
   return modelMap[model.toLowerCase()] || model;
