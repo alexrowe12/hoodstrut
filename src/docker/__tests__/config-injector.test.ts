@@ -193,5 +193,68 @@ describe('config-injector', () => {
       expect(env.DEBUG).toBe('true');
       expect(env.NODE_ENV).toBe('test');
     });
+
+    it('passes referenced MCP environment variables into the container', () => {
+      process.env.GITHUB_TOKEN = 'runtime-secret';
+      const profile: Profile = {
+        name: 'test',
+        model: 'claude-sonnet-4-20250514',
+        mcp_servers: [{
+          name: 'github',
+          command: 'npx',
+          env: { GITHUB_TOKEN: '${GITHUB_TOKEN}' },
+        }],
+      };
+
+      const env = buildEnvVars(profile);
+
+      expect(env.GITHUB_TOKEN).toBe('runtime-secret');
+    });
+
+    it('fails clearly when a referenced MCP variable is missing', () => {
+      delete process.env.GITHUB_TOKEN;
+      const profile: Profile = {
+        name: 'my-setup',
+        model: 'claude-sonnet-4-20250514',
+        mcp_servers: [{
+          name: 'github',
+          command: 'npx',
+          env: { GITHUB_TOKEN: '${GITHUB_TOKEN}' },
+        }],
+      };
+
+      expect(() => buildEnvVars(profile)).toThrow(
+        'Profile "my-setup" requires GITHUB_TOKEN for MCP server "github"'
+      );
+    });
+
+    it('allows references with defaults when the host variable is absent', () => {
+      delete process.env.CACHE_DIR;
+      const profile: Profile = {
+        name: 'test',
+        model: 'claude-sonnet-4-20250514',
+        mcp_servers: [{
+          name: 'cache',
+          command: 'node',
+          env: { CACHE_DIR: '${CACHE_DIR:-/tmp/cache}' },
+        }],
+      };
+
+      expect(buildEnvVars(profile).CACHE_DIR).toBeUndefined();
+    });
+
+    it('does not require host variables for literal values in manual profiles', () => {
+      const profile: Profile = {
+        name: 'manual',
+        model: 'claude-sonnet-4-20250514',
+        mcp_servers: [{
+          name: 'local',
+          command: 'node',
+          env: { NODE_ENV: 'test' },
+        }],
+      };
+
+      expect(() => buildEnvVars(profile)).not.toThrow();
+    });
   });
 });

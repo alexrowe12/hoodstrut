@@ -1,195 +1,161 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { evaluatePatterns, evaluateSuccess } from '../success.js';
 
-vi.mock('../judge.js', () => ({
-  evaluateWithJudge: vi.fn(),
-}));
+vi.mock('../judge.js', async () => {
+  const actual = await vi.importActual<typeof import('../judge.js')>('../judge.js');
+  return { ...actual, evaluateWithJudge: vi.fn() };
+});
 
-import { evaluateWithJudge } from '../judge.js';
+import { evaluateWithJudge, JudgeEvaluationError } from '../judge.js';
 
 const mockedEvaluateWithJudge = vi.mocked(evaluateWithJudge);
 
+const verifier = {
+  command: 'npm test',
+  exitCode: 0,
+  timedOut: false,
+  stdout: 'Tests: 12 passed\nHello, World!',
+  stderr: '',
+};
+
+const baseInput = {
+  agentExitCode: 0,
+  agentTimedOut: false,
+  verification: { type: 'command' as const, command: 'npm test' },
+  verifier,
+  task: { title: 'Test task', body: 'Do the thing' },
+  patch: 'diff --git a/a.ts b/a.ts',
+  manifest: '{"files":[]}',
+};
+
 describe('evaluatePatterns', () => {
-  it('matches regex pattern in stdout', () => {
-    const result = evaluatePatterns(
-      ['test.*passed'],
-      'Running tests...\ntest suite passed successfully',
-      ''
-    );
-    expect(result).not.toBeNull();
-    expect(result?.success).toBe(true);
-    expect(result?.method).toBe('pattern');
-    expect(result?.details).toContain('matched regex');
+  it('requires all patterns by default', () => {
+    const result = evaluatePatterns(['Tests: \\d+ passed', 'missing'], verifier.stdout, '');
+    expect(result.success).toBe(false);
+    expect(result.matches).toEqual([
+      { pattern: 'Tests: \\d+ passed', matched: true },
+      { pattern: 'missing', matched: false },
+    ]);
   });
 
-  it('matches substring when regex is invalid', () => {
-    const result = evaluatePatterns(
-      ['[invalid regex'],
-      'output contains [invalid regex literally',
-      ''
-    );
-    expect(result).not.toBeNull();
-    expect(result?.success).toBe(true);
-    expect(result?.method).toBe('pattern');
-    expect(result?.details).toContain('matched substring');
-  });
-
-  it('returns null when no patterns match', () => {
-    const result = evaluatePatterns(
-      ['success', 'passed', 'ok'],
-      'failed with errors',
-      'error: something went wrong'
-    );
-    expect(result).toBeNull();
-  });
-
-  it('is case-insensitive', () => {
-    const result = evaluatePatterns(
-      ['SUCCESS'],
-      'success',
-      ''
-    );
-    expect(result).not.toBeNull();
-    expect(result?.success).toBe(true);
-  });
-
-  it('handles multiline output', () => {
-    const result = evaluatePatterns(
-      ['^Tests: \\d+ passed'],
-      'Running...\nTests: 15 passed\nDone.',
-      ''
-    );
-    expect(result).not.toBeNull();
-    expect(result?.success).toBe(true);
-  });
-
-  it('matches in stderr', () => {
-    const result = evaluatePatterns(
-      ['build successful'],
-      '',
-      'build successful'
-    );
-    expect(result).not.toBeNull();
-    expect(result?.success).toBe(true);
-  });
-
-  it('returns first matching pattern', () => {
-    const result = evaluatePatterns(
-      ['first', 'second', 'third'],
-      'contains first and second',
-      ''
-    );
-    expect(result?.details).toContain('first');
+  it('supports explicit any matching', () => {
+    expect(evaluatePatterns(['missing', 'Hello.*World'], verifier.stdout, '', 'any').success).toBe(true);
   });
 });
 
 describe('evaluateSuccess', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+  beforeEach(() => vi.clearAllMocks());
+
+  it('passes a successful command verifier', async () => {
+    const result = await evaluateSuccess(baseInput);
+    expect(result).toMatchObject({ success: true, status: 'passed', method: 'command' });
   });
 
-  const baseInput = {
-    exitCode: 0,
-    stdout: 'output',
-    stderr: '',
-    task: {
-      title: 'Test task',
-      body: 'Task body',
-    },
-    filesChanged: {
-      modified: [],
-      created: [],
-      deleted: [],
-    },
-  };
-
-  it('uses command method when success_command set and exits 0', async () => {
+  it('treats verifier nonzero as a normal task failure', async () => {
     const result = await evaluateSuccess({
       ...baseInput,
-      task: { ...baseInput.task, success_command: 'npm test' },
+      verifier: { ...verifier, exitCode: 1, stdout: 'tests failed' },
     });
-    expect(result.success).toBe(true);
-    expect(result.method).toBe('command');
-    expect(result.details).toContain('npm test');
+    expect(result).toMatchObject({ success: false, status: 'failed' });
   });
 
-  it('uses command method and fails when exit code non-zero', async () => {
+  it('matches patterns only against verifier evidence', async () => {
     const result = await evaluateSuccess({
       ...baseInput,
-      exitCode: 1,
-      task: { ...baseInput.task, success_command: 'npm test' },
+      verification: {
+        type: 'pattern',
+        command: 'node hello.js',
+        patterns: ['Hello.*World'],
+        match: 'all',
+      },
+      verifier: { ...verifier, command: 'node hello.js', stdout: 'file not found', exitCode: 1 },
+      patch: 'The assistant claimed: Hello World and task complete',
     });
-    expect(result.success).toBe(false);
-    expect(result.method).toBe('command');
+    expect(result).toMatchObject({ success: false, status: 'failed', method: 'pattern' });
   });
 
-  it('uses pattern method when success_patterns set', async () => {
+  it('fails patterns that appear in the patch but not verifier output', async () => {
     const result = await evaluateSuccess({
       ...baseInput,
-      stdout: 'all tests passed',
-      task: { ...baseInput.task, success_patterns: ['tests passed'] },
+      verification: {
+        type: 'pattern',
+        command: 'node hello.js',
+        patterns: ['Hello.*World'],
+        match: 'all',
+      },
+      verifier: { ...verifier, command: 'node hello.js', stdout: 'different output' },
+      patch: '+ console.log("Hello World")',
     });
-    expect(result.success).toBe(true);
-    expect(result.method).toBe('pattern');
+    expect(result).toMatchObject({ success: false, status: 'failed' });
   });
 
-  it('fails when patterns defined but none match', async () => {
+  it('classifies agent timeouts without running verification', async () => {
+    const result = await evaluateSuccess({ ...baseInput, agentTimedOut: true, verifier: undefined });
+    expect(result).toMatchObject({ status: 'timed_out', errorType: 'agent_timeout' });
+  });
+
+  it('classifies agent process failures separately', async () => {
+    const result = await evaluateSuccess({ ...baseInput, agentExitCode: 1, verifier: undefined });
+    expect(result).toMatchObject({ status: 'agent_error', errorType: 'agent_error' });
+  });
+
+  it('classifies verifier timeouts as verification errors', async () => {
     const result = await evaluateSuccess({
       ...baseInput,
-      stdout: 'tests failed',
-      task: { ...baseInput.task, success_patterns: ['tests passed', 'success'] },
+      verifier: { ...verifier, timedOut: true, exitCode: 137 },
     });
-    expect(result.success).toBe(false);
-    expect(result.method).toBe('pattern');
-    expect(result.details).toContain('No success patterns matched');
+    expect(result).toMatchObject({ status: 'verification_error', errorType: 'verification_timeout' });
   });
 
-  it('uses ai_judge method when ai_judge is true', async () => {
+  it('passes patch, manifest, and test evidence to the judge', async () => {
     mockedEvaluateWithJudge.mockResolvedValue({
       success: true,
-      reasoning: 'Task completed successfully',
+      reasoning: 'Criteria are evidenced',
       confidence: 'high',
+      criteria: [{ criterion: 'Works', met: true, evidence: 'Tests pass' }],
+      rawResponse: '{"success":true}',
     });
-
     const result = await evaluateSuccess({
       ...baseInput,
-      task: { ...baseInput.task, ai_judge: true },
-    });
-
-    expect(result.success).toBe(true);
-    expect(result.method).toBe('ai_judge');
-    expect(result.details).toContain('Task completed successfully');
-    expect(result.details).toContain('confidence: high');
-    expect(mockedEvaluateWithJudge).toHaveBeenCalled();
-  });
-
-  it('falls back to exit_code when no criteria', async () => {
-    const result = await evaluateSuccess(baseInput);
-    expect(result.success).toBe(true);
-    expect(result.method).toBe('exit_code');
-  });
-
-  it('exit_code fallback fails on non-zero', async () => {
-    const result = await evaluateSuccess({
-      ...baseInput,
-      exitCode: 1,
-    });
-    expect(result.success).toBe(false);
-    expect(result.method).toBe('exit_code');
-  });
-
-  it('command takes precedence over patterns', async () => {
-    const result = await evaluateSuccess({
-      ...baseInput,
-      exitCode: 1,
-      stdout: 'tests passed',
-      task: {
-        ...baseInput.task,
-        success_command: 'npm test',
-        success_patterns: ['tests passed'],
+      verification: {
+        type: 'ai_judge',
+        evidence_command: 'npm test',
+        criteria: 'The change must work',
       },
     });
-    expect(result.success).toBe(false);
-    expect(result.method).toBe('command');
+
+    expect(result.status).toBe('passed');
+    expect(mockedEvaluateWithJudge).toHaveBeenCalledWith(expect.objectContaining({
+      patch: baseInput.patch,
+      manifest: baseInput.manifest,
+      verifier,
+    }));
+    expect(result.judgeArtifact?.status).toBe('completed');
+  });
+
+  it('classifies invalid judge output as an unscored judge error', async () => {
+    mockedEvaluateWithJudge.mockRejectedValue(new JudgeEvaluationError(
+      'judge_invalid_response',
+      'AI judge returned invalid JSON',
+      'task was a success'
+    ));
+    const result = await evaluateSuccess({
+      ...baseInput,
+      verification: {
+        type: 'ai_judge',
+        evidence_command: 'npm test',
+        criteria: 'The change must work',
+      },
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      status: 'judge_error',
+      errorType: 'judge_invalid_response',
+    });
+    expect(result.judgeArtifact).toMatchObject({
+      status: 'error',
+      raw_response: 'task was a success',
+    });
   });
 });

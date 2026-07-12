@@ -14,6 +14,9 @@ const TASK_MD = (id: string) => `---
 id: ${id}
 title: Test task ${id}
 repo: ./repos/todo-app
+verification:
+  type: command
+  command: npm test
 ---
 
 Do the thing.
@@ -23,6 +26,8 @@ function makeRunResult(overrides: {
   profile?: string;
   task?: string;
   success?: boolean;
+  status?: RunResult['result']['status'];
+  errorType?: string;
   cost?: number | null;
   score?: number | null;
 }): RunResult {
@@ -45,6 +50,8 @@ function makeRunResult(overrides: {
     result: {
       success: overrides.success ?? true,
       success_method: 'command',
+      status: overrides.status,
+      error_type: overrides.errorType,
       files_modified: [],
       files_created: [],
       files_deleted: [],
@@ -224,5 +231,26 @@ describe('summarizeBenchmark', () => {
     expect(summary.errors[0].message).toBe('docker exploded');
     expect(summary.successful_runs).toBe(0);
     expect(summary.failed_runs).toBe(0);
+  });
+
+  it('separates task failures, timeouts, and verification errors', () => {
+    const results = [
+      makeRunResult({ success: false, status: 'failed' }),
+      makeRunResult({ success: false, status: 'timed_out' }),
+      makeRunResult({
+        success: false,
+        status: 'judge_error',
+        errorType: 'judge_invalid_response',
+        score: null,
+      }),
+    ];
+
+    const summary = summarizeBenchmark(config, results, [], 3, 30, '2026-07-11T00:00:00Z');
+    expect(summary.failed_runs).toBe(2);
+    expect(summary.errored_runs).toBe(1);
+    expect(summary.errors[0]).toMatchObject({
+      type: 'judge_invalid_response',
+      phase: 'judge',
+    });
   });
 });

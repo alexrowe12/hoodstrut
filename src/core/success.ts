@@ -1,108 +1,185 @@
-import { evaluateWithJudge } from './judge.js';
+import {
+  evaluateWithJudge,
+  JudgeEvaluationError,
+  type JudgeResult,
+} from './judge.js';
+import type { RunStatus, Verification } from './types.js';
 
-export type SuccessMethod = 'command' | 'pattern' | 'ai_judge' | 'exit_code';
+export type SuccessMethod = 'command' | 'pattern' | 'ai_judge';
+export interface JudgeArtifact {
+  status: 'completed' | 'error';
+  raw_response?: string;
+  result?: Omit<JudgeResult, 'rawResponse'>;
+  error_code?: string;
+  error?: string;
+}
 
 export interface SuccessResult {
   success: boolean;
+  status: RunStatus;
   method: SuccessMethod;
-  details?: string;
+  details: string;
+  errorType?: string;
+  judgeArtifact?: JudgeArtifact;
 }
 
 export interface SuccessEvaluationInput {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
+  agentExitCode: number;
+  agentTimedOut: boolean;
+  verification: Verification;
+  verifier?: {
+    command: string;
+    exitCode: number;
+    timedOut: boolean;
+    stdout: string;
+    stderr: string;
+  };
   task: {
-    success_command?: string;
-    success_patterns?: string[];
-    ai_judge?: boolean;
-    ai_judge_criteria?: string;
     title: string;
     body: string;
   };
-  filesChanged: {
-    modified: string[];
-    created: string[];
-    deleted: string[];
-  };
+  patch: string;
+  manifest: string;
+}
+
+export interface PatternEvaluation {
+  success: boolean;
+  matches: Array<{ pattern: string; matched: boolean }>;
 }
 
 export function evaluatePatterns(
   patterns: string[],
   stdout: string,
-  stderr: string
-): SuccessResult | null {
-  const combined = stdout + '\n' + stderr;
+  stderr: string,
+  match: 'all' | 'any' = 'all'
+): PatternEvaluation {
+  const evidence = `${stdout}\n${stderr}`;
+  const matches = patterns.map(pattern => ({
+    pattern,
+    matched: new RegExp(pattern, 'im').test(evidence),
+  }));
+  return {
+    success: match === 'all' ? matches.every(item => item.matched) : matches.some(item => item.matched),
+    matches,
+  };
+}
 
-  for (const pattern of patterns) {
-    try {
-      const regex = new RegExp(pattern, 'im');
-      if (regex.test(combined)) {
-        return {
-          success: true,
-          method: 'pattern',
-          details: `matched regex: ${pattern}`,
-        };
-      }
-    } catch {
-      if (combined.includes(pattern)) {
-        return {
-          success: true,
-          method: 'pattern',
-          details: `matched substring: "${pattern}"`,
-        };
-      }
-    }
-  }
-
-  return null;
+function verifierUnavailable(method: SuccessMethod): SuccessResult {
+  return {
+    success: false,
+    status: 'verification_error',
+    method,
+    details: 'Verifier evidence was not produced',
+    errorType: 'verifier_missing',
+  };
 }
 
 export async function evaluateSuccess(input: SuccessEvaluationInput): Promise<SuccessResult> {
-  if (input.task.success_command) {
-    return {
-      success: input.exitCode === 0,
-      method: 'command',
-      details: `success_command "${input.task.success_command}" exited with code ${input.exitCode}`,
-    };
-  }
+  const method = input.verification.type === 'ai_judge'
+    ? 'ai_judge'
+    : input.verification.type;
 
-  if (input.task.success_patterns?.length) {
-    const patternResult = evaluatePatterns(
-      input.task.success_patterns,
-      input.stdout,
-      input.stderr
-    );
-    if (patternResult) {
-      return patternResult;
-    }
+  if (input.agentTimedOut) {
     return {
       success: false,
-      method: 'pattern',
-      details: 'No success patterns matched',
+      status: 'timed_out',
+      method,
+      details: 'Agent exceeded its execution timeout',
+      errorType: 'agent_timeout',
     };
   }
 
-  if (input.task.ai_judge) {
-    const judgeResult = await evaluateWithJudge({
+  if (input.agentExitCode !== 0) {
+    return {
+      success: false,
+      status: 'agent_error',
+      method,
+      details: `Agent exited with code ${input.agentExitCode}`,
+      errorType: 'agent_error',
+    };
+  }
+
+  if (!input.verifier) return verifierUnavailable(method);
+  if (input.verifier.timedOut) {
+    return {
+      success: false,
+      status: 'verification_error',
+      method,
+      details: 'Verifier exceeded its execution timeout',
+      errorType: 'verification_timeout',
+    };
+  }
+
+  if (input.verification.type === 'command') {
+    const success = input.verifier.exitCode === 0;
+    return {
+      success,
+      status: success ? 'passed' : 'failed',
+      method: 'command',
+      details: `Verification command "${input.verifier.command}" exited with code ${input.verifier.exitCode}`,
+    };
+  }
+
+  if (input.verification.type === 'pattern') {
+    if (input.verifier.exitCode !== 0) {
+      return {
+        success: false,
+        status: 'failed',
+        method: 'pattern',
+        details: `Pattern evidence command exited with code ${input.verifier.exitCode}`,
+      };
+    }
+
+    const evaluation = evaluatePatterns(
+      input.verification.patterns,
+      input.verifier.stdout,
+      input.verifier.stderr,
+      input.verification.match
+    );
+    const summary = evaluation.matches
+      .map(item => `${item.matched ? 'matched' : 'missed'}: ${item.pattern}`)
+      .join('; ');
+    return {
+      success: evaluation.success,
+      status: evaluation.success ? 'passed' : 'failed',
+      method: 'pattern',
+      details: `${input.verification.match} patterns required; ${summary}`,
+    };
+  }
+
+  try {
+    const result = await evaluateWithJudge({
       taskTitle: input.task.title,
       taskBody: input.task.body,
-      judgeCriteria: input.task.ai_judge_criteria,
-      stdout: input.stdout,
-      stderr: input.stderr,
-      exitCode: input.exitCode,
-      filesChanged: input.filesChanged,
+      judgeCriteria: input.verification.criteria,
+      patch: input.patch,
+      manifest: input.manifest,
+      agentExitCode: input.agentExitCode,
+      verifier: input.verifier,
     });
+    const { rawResponse, ...parsedResult } = result;
     return {
-      success: judgeResult.success,
+      success: result.success,
+      status: result.success ? 'passed' : 'failed',
       method: 'ai_judge',
-      details: `${judgeResult.reasoning} (confidence: ${judgeResult.confidence})`,
+      details: `${result.reasoning} (confidence: ${result.confidence})`,
+      judgeArtifact: { status: 'completed', raw_response: rawResponse, result: parsedResult },
+    };
+  } catch (error) {
+    const judgeError = error instanceof JudgeEvaluationError ? error : undefined;
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      success: false,
+      status: 'judge_error',
+      method: 'ai_judge',
+      details: message,
+      errorType: judgeError?.code ?? 'judge_error',
+      judgeArtifact: {
+        status: 'error',
+        raw_response: judgeError?.rawResponse,
+        error_code: judgeError?.code ?? 'judge_error',
+        error: message,
+      },
     };
   }
-
-  return {
-    success: input.exitCode === 0,
-    method: 'exit_code',
-    details: `Exit code: ${input.exitCode}`,
-  };
 }

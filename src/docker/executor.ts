@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, cp, readdir, stat, readFile } from 'node:fs/promises';
+import { mkdir, cp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dir as tmpDir } from 'tmp-promise';
@@ -8,12 +8,19 @@ import type { ExecutorOptions, ExecutionResult } from './types.js';
 import type { MetricsResult, RunMetrics } from '../metrics/types.js';
 import { prepareRepo } from './repo-preparer.js';
 import { injectConfig, buildEnvVars } from './config-injector.js';
-import { createCaptureStreams, pipeWithLogging, closeCaptureStreams } from './output-capture.js';
+import {
+  createCaptureStreams,
+  pipeWithLogging,
+  closeCaptureStreams,
+  type CaptureStreams,
+} from './output-capture.js';
+import { collectWorkspaceArtifacts, establishWorkspaceBaseline } from './workspace-artifacts.js';
+import { ExecutionPhaseError } from './errors.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DOCKER_IMAGE = 'hoodstrut-runner:latest';
+const DOCKER_IMAGE = 'hoodstrut-runner:0.1.0-artifacts';
 const DEFAULT_TIMEOUT = 300;
-const METRICS_FILENAME = '.metrics.json';
+const METRICS_FILENAME = 'metrics.json';
 
 // Share one in-flight build across concurrent callers (parallel runs)
 let inFlightBuild: Promise<string> | null = null;
@@ -79,6 +86,7 @@ async function doBuildRunnerImage(force: boolean): Promise<string> {
     await mkdir(join(buildContext, 'scripts'));
     await cp(join(scriptsDir, 'run-task.sh'), join(buildContext, 'scripts', 'run-task.sh'));
     await cp(join(scriptsDir, 'run-sdk.mjs'), join(buildContext, 'scripts', 'run-sdk.mjs'));
+    await cp(join(scriptsDir, 'run-phase.mjs'), join(buildContext, 'scripts', 'run-phase.mjs'));
 
     await runDockerCommand(['build', '-t', DOCKER_IMAGE, buildContext]);
 
@@ -100,13 +108,17 @@ async function imageExists(imageName: string): Promise<boolean> {
 export async function runContainer(options: ExecutorOptions): Promise<ExecutionResult> {
   const { profile, task, outputDir, verbose = false, telemetry } = options;
   const timeout = options.timeout ?? task.timeout ?? DEFAULT_TIMEOUT;
+  const envVars = buildEnvVars(profile, telemetry);
 
   await mkdir(outputDir, { recursive: true });
 
   installSignalHandlers();
-  const containerName = `hoodstrut-${randomUUID().slice(0, 8)}`;
-
+  const runName = `hoodstrut-${randomUUID().slice(0, 8)}`;
   const { path: workspaceDir, cleanup: cleanupWorkspace } = await tmpDir({ unsafeCleanup: true });
+  const { path: baselineDir, cleanup: cleanupBaseline } = await tmpDir({ unsafeCleanup: true });
+  const { path: containerArtifactsDir, cleanup: cleanupContainerArtifacts } = await tmpDir({ unsafeCleanup: true });
+  let streams: Awaited<ReturnType<typeof createCaptureStreams>> | undefined;
+  let streamsClosed = false;
 
   try {
     await prepareRepo({
@@ -115,49 +127,124 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
       destDir: workspaceDir,
     });
 
-    const filesBefore = await listFilesRecursive(workspaceDir);
-
     await injectConfig(profile, workspaceDir);
-
     const image = await buildRunnerImage();
-
     const startTime = Date.now();
-
-    const envVars = buildEnvVars(profile, telemetry);
-
     const taskPrompt = buildTaskPrompt(task.title, task.body);
+    streams = await createCaptureStreams(outputDir, verbose);
 
-    const dockerArgs = buildDockerArgs({
-      image,
-      containerName,
-      workspaceDir,
-      envVars,
-      timeout,
-      setupCommands: task.setup_commands,
-      successCommand: task.success_command,
-      workingDir: task.working_dir,
-      taskPrompt,
-    });
+    if (task.setup_commands?.length) {
+      const setupName = `${runName}-setup`;
+      const setupResult = await runManagedContainer(
+        buildDockerArgs({
+          phase: 'setup', image, containerName: setupName, workspaceDir,
+          artifactDir: containerArtifactsDir,
+          envVars, timeout, commands: task.setup_commands, workingDir: task.working_dir,
+        }),
+        setupName,
+        streams,
+        verbose,
+        timeout
+      );
+      if (setupResult.exitCode !== 0) {
+        const code = setupResult.timedOut ? 'setup_timeout' : 'setup_failed';
+        const message = setupResult.timedOut
+          ? `Setup commands timed out after ${timeout}s`
+          : `Setup commands failed with exit code ${setupResult.exitCode}`;
+        throw new ExecutionPhaseError(code, 'setup', message, {
+          timedOut: setupResult.timedOut,
+          exitCode: setupResult.exitCode,
+        });
+      }
+    }
 
-    const streams = await createCaptureStreams(outputDir, verbose);
+    const baseline = await establishWorkspaceBaseline(workspaceDir, join(baselineDir, 'git'));
 
-    activeContainers.add(containerName);
-    const { exitCode, containerId } = await runDockerContainer(
-      dockerArgs,
-      containerName,
+    const agentName = `${runName}-agent`;
+    const agentResult = await runManagedContainer(
+      buildDockerArgs({
+        phase: 'agent', image, containerName: agentName, workspaceDir,
+        artifactDir: containerArtifactsDir,
+        envVars, timeout, workingDir: task.working_dir, taskPrompt,
+      }),
+      agentName,
       streams,
       verbose,
       timeout
     );
-
     await closeCaptureStreams(streams);
+    streamsClosed = true;
+
+    // Capture the agent's workspace before verification commands can create
+    // coverage, snapshots, or other test artifacts of their own.
+    const captured = await collectWorkspaceArtifacts(workspaceDir, outputDir, baseline);
+    const agentDuration = Math.round((Date.now() - startTime) / 1000);
+    const metrics = await readMetricsFile(containerArtifactsDir, agentDuration);
+    await cp(
+      join(containerArtifactsDir, METRICS_FILENAME),
+      join(outputDir, METRICS_FILENAME)
+    ).catch(() => undefined);
+
+    let verifier: ExecutionResult['verifier'];
+    let verifierOutput: string | undefined;
+    if (!agentResult.timedOut && agentResult.exitCode === 0) {
+      const verificationCommand = task.verification.type === 'ai_judge'
+        ? task.verification.evidence_command
+        : task.verification.command;
+      verifierOutput = join(outputDir, 'verifier.log');
+      const verifierTempDir = join(outputDir, '.verifier');
+      const verifierStreams = await createCaptureStreams(verifierTempDir, verbose);
+      let verifierStreamsClosed = false;
+      const verifierName = `${runName}-verifier`;
+      try {
+        const verifierResult = await runManagedContainer(
+          buildDockerArgs({
+            phase: 'verify', image, containerName: verifierName, workspaceDir,
+            artifactDir: containerArtifactsDir,
+            envVars, timeout, command: verificationCommand, workingDir: task.working_dir,
+          }),
+          verifierName,
+          verifierStreams,
+          verbose,
+          timeout
+        );
+        await closeCaptureStreams(verifierStreams);
+        verifierStreamsClosed = true;
+        const [verifierStdout, verifierStderr] = await Promise.all([
+          readFile(verifierStreams.stdoutPath, 'utf-8').catch(() => ''),
+          readFile(verifierStreams.stderrPath, 'utf-8').catch(() => ''),
+        ]);
+        await writeFile(
+          verifierOutput,
+          [
+            `Command: ${verificationCommand}`,
+            `Exit code: ${verifierResult.exitCode}`,
+            `Timed out: ${verifierResult.timedOut}`,
+            '',
+            '=== stdout ===',
+            verifierStdout,
+            '=== stderr ===',
+            verifierStderr,
+          ].join('\n'),
+          'utf-8'
+        );
+        verifier = {
+          command: verificationCommand,
+          exitCode: verifierResult.exitCode,
+          timedOut: verifierResult.timedOut,
+          duration: verifierResult.duration,
+          stdout: verifierStdout,
+          stderr: verifierStderr,
+        };
+      } finally {
+        if (!verifierStreamsClosed) {
+          await closeCaptureStreams(verifierStreams);
+        }
+        await rm(verifierTempDir, { recursive: true, force: true });
+      }
+    }
 
     const duration = Math.round((Date.now() - startTime) / 1000);
-
-    const filesAfter = await listFilesRecursive(workspaceDir);
-    const filesChanged = computeFileChanges(filesBefore, filesAfter);
-
-    const metrics = await readMetricsFile(workspaceDir, duration);
 
     const [stdoutContent, stderrContent] = await Promise.all([
       readFile(streams.stdoutPath, 'utf-8').catch(() => ''),
@@ -165,22 +252,32 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
     ]);
 
     return {
-      containerId,
-      exitCode,
+      containerId: agentResult.containerId,
+      exitCode: verifier?.exitCode ?? agentResult.exitCode,
+      agentExitCode: agentResult.exitCode,
+      agentTimedOut: agentResult.timedOut,
+      verifierExitCode: verifier?.exitCode,
+      verifier,
       duration,
       stdout: streams.stdoutPath,
       stderr: streams.stderrPath,
       stdoutContent,
       stderrContent,
-      filesChanged,
+      filesChanged: captured.filesChanged,
+      artifacts: {
+        changesPatch: captured.patchPath,
+        filesManifest: captured.manifestPath,
+        verifierOutput,
+      },
       metrics,
     };
   } finally {
-    // Belt-and-suspenders: `--rm` handles the happy path, but a timed-out or
-    // wedged container may survive. Force-remove and deregister.
-    forceRemoveContainer(containerName);
-    activeContainers.delete(containerName);
+    if (streams && !streamsClosed) {
+      await closeCaptureStreams(streams);
+    }
     await cleanupWorkspace();
+    await cleanupBaseline();
+    await cleanupContainerArtifacts();
   }
 }
 
@@ -189,15 +286,17 @@ function buildTaskPrompt(title: string, body: string): string {
 }
 
 interface DockerArgsOptions {
+  phase: 'setup' | 'agent' | 'verify';
   image: string;
   containerName: string;
   workspaceDir: string;
+  artifactDir: string;
   envVars: Record<string, string>;
   timeout: number;
-  setupCommands?: string[];
-  successCommand?: string;
+  commands?: string[];
+  command?: string;
   workingDir?: string;
-  taskPrompt: string;
+  taskPrompt?: string;
 }
 
 function buildDockerArgs(options: DockerArgsOptions): string[] {
@@ -209,24 +308,40 @@ function buildDockerArgs(options: DockerArgsOptions): string[] {
     '--stop-timeout', String(options.timeout),
   ];
 
+  if (options.phase === 'agent') {
+    args.push('-v', `${options.artifactDir}:/hoodstrut-artifacts`);
+  }
+
   for (const [key, value] of Object.entries(options.envVars)) {
     args.push('-e', `${key}=${value}`);
   }
 
-  if (options.setupCommands?.length) {
-    args.push('-e', `SETUP_COMMANDS=${JSON.stringify(options.setupCommands)}`);
+  if (options.phase === 'setup') {
+    args.push('-e', `SETUP_COMMANDS=${JSON.stringify(options.commands ?? [])}`);
   }
 
-  if (options.successCommand) {
-    args.push('-e', `SUCCESS_COMMAND=${options.successCommand}`);
+  if (options.phase === 'verify' && options.command) {
+    args.push('-e', `SUCCESS_COMMAND=${options.command}`);
   }
 
   if (options.workingDir) {
     args.push('-e', `WORKING_DIR=/workspace/${options.workingDir}`);
   }
 
+  if (options.phase === 'agent') {
+    args.push('-e', 'METRICS_FILE=/hoodstrut-artifacts/metrics.json');
+  }
+
+  if (options.phase !== 'agent') {
+    args.push('--entrypoint', 'node');
+  }
+
   args.push(options.image);
-  args.push(options.taskPrompt);
+  if (options.phase === 'agent') {
+    args.push(options.taskPrompt ?? '');
+  } else {
+    args.push('/run-phase.mjs', options.phase);
+  }
 
   return args;
 }
@@ -234,16 +349,36 @@ function buildDockerArgs(options: DockerArgsOptions): string[] {
 interface ContainerResult {
   exitCode: number;
   containerId: string;
+  timedOut: boolean;
+  duration: number;
+}
+
+async function runManagedContainer(
+  args: string[],
+  containerName: string,
+  streams: Pick<CaptureStreams, 'stdoutStream' | 'stderrStream'>,
+  verbose: boolean,
+  timeout: number
+): Promise<ContainerResult> {
+  activeContainers.add(containerName);
+  try {
+    return await runDockerContainer(args, containerName, streams, verbose, timeout);
+  } finally {
+    forceRemoveContainer(containerName);
+    activeContainers.delete(containerName);
+  }
 }
 
 async function runDockerContainer(
   args: string[],
   containerName: string,
-  streams: Awaited<ReturnType<typeof createCaptureStreams>>,
+  streams: Pick<CaptureStreams, 'stdoutStream' | 'stderrStream'>,
   verbose: boolean,
   timeout: number
 ): Promise<ContainerResult> {
   return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    let timedOut = false;
     const proc = spawn('docker', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -252,6 +387,7 @@ async function runDockerContainer(
     pipeWithLogging(proc.stderr, streams.stderrStream, verbose, '[stderr]');
 
     const timeoutId = globalThis.setTimeout(() => {
+      timedOut = true;
       // Kill the container by name — killing the `docker run` client alone does
       // NOT stop the container, so with `--rm` it would keep running orphaned.
       spawn('docker', ['kill', containerName], { stdio: 'ignore' });
@@ -262,6 +398,8 @@ async function runDockerContainer(
       resolve({
         exitCode: code ?? 1,
         containerId: containerName,
+        timedOut,
+        duration: Math.round((Date.now() - startedAt) / 1000),
       });
     });
 
@@ -301,67 +439,6 @@ async function runDockerCommand(
   });
 }
 
-async function listFilesRecursive(dir: string): Promise<Map<string, number>> {
-  const files = new Map<string, number>();
-
-  async function walk(currentDir: string, prefix: string = '') {
-    try {
-      const entries = await readdir(currentDir, { withFileTypes: true });
-      for (const entry of entries) {
-        const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-        const fullPath = join(currentDir, entry.name);
-
-        if (entry.name === '.git' || entry.name === '.claude' || entry.name === '.otel') {
-          continue;
-        }
-
-        if (entry.isDirectory()) {
-          await walk(fullPath, relativePath);
-        } else {
-          const stats = await stat(fullPath);
-          files.set(relativePath, stats.mtimeMs);
-        }
-      }
-    } catch {
-      // Ignore errors reading directories
-    }
-  }
-
-  await walk(dir);
-  return files;
-}
-
-interface FileChanges {
-  modified: string[];
-  created: string[];
-  deleted: string[];
-}
-
-function computeFileChanges(
-  before: Map<string, number>,
-  after: Map<string, number>
-): FileChanges {
-  const modified: string[] = [];
-  const created: string[] = [];
-  const deleted: string[] = [];
-
-  for (const [path, mtime] of after) {
-    if (!before.has(path)) {
-      created.push(path);
-    } else if (before.get(path) !== mtime) {
-      modified.push(path);
-    }
-  }
-
-  for (const path of before.keys()) {
-    if (!after.has(path)) {
-      deleted.push(path);
-    }
-  }
-
-  return { modified, created, deleted };
-}
-
 interface MetricsFileContent {
   success: boolean;
   cost_usd: number;
@@ -382,8 +459,8 @@ interface MetricsFileContent {
   error?: string;
 }
 
-async function readMetricsFile(workspaceDir: string, fallbackDuration: number): Promise<MetricsResult> {
-  const metricsPath = join(workspaceDir, METRICS_FILENAME);
+async function readMetricsFile(outputDir: string, fallbackDuration: number): Promise<MetricsResult> {
+  const metricsPath = join(outputDir, METRICS_FILENAME);
   const warnings: string[] = [];
 
   try {

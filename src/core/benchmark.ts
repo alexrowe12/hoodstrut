@@ -14,6 +14,14 @@ import { executeRun, resolveProfilePath, resolveTaskPath } from './run-pipeline.
 import { mapWithConcurrency } from './pool.js';
 import { buildRunnerImage } from '../docker/index.js';
 import type { TelemetryConfig } from '../metrics/types.js';
+import { ExecutionPhaseError } from '../docker/errors.js';
+
+export interface BenchmarkError {
+  run_id: string;
+  message: string;
+  type?: string;
+  phase?: 'setup' | 'agent' | 'verifier' | 'judge' | 'infrastructure';
+}
 
 export async function loadBenchmarkConfig(path: string): Promise<BenchmarkConfig> {
   const content = await readFile(path, 'utf-8');
@@ -120,6 +128,25 @@ export interface BenchmarkProgress {
   spec: BenchmarkRunSpec;
   result?: RunResult;
   error?: string;
+  errorType?: string;
+  errorPhase?: BenchmarkError['phase'];
+}
+
+function classifyThrownError(runId: string, error: Error): BenchmarkError {
+  if (error instanceof ExecutionPhaseError) {
+    return {
+      run_id: runId,
+      message: error.message,
+      type: error.code,
+      phase: error.phase,
+    };
+  }
+  return {
+    run_id: runId,
+    message: error.message,
+    type: 'infrastructure_error',
+    phase: 'infrastructure',
+  };
 }
 
 export interface RunBenchmarkOptions {
@@ -142,12 +169,28 @@ function benchmarkDirName(name: string, now: Date): string {
 export function summarizeBenchmark(
   config: BenchmarkConfig,
   results: RunResult[],
-  errors: { run_id: string; message: string }[],
+  errors: BenchmarkError[],
   totalRuns: number,
   durationSeconds: number,
   timestamp: string
 ): BenchmarkSummary {
   const successful = results.filter(r => r.result.success).length;
+  const failed = results.filter(r => {
+    const status = r.result.status;
+    return status ? status === 'failed' || status === 'timed_out' : !r.result.success;
+  }).length;
+  const resultErrors: BenchmarkError[] = results.flatMap(result => {
+    const status = result.result.status;
+    if (!status || !['agent_error', 'verification_error', 'judge_error'].includes(status)) return [];
+    const phase = status === 'agent_error' ? 'agent' : status === 'judge_error' ? 'judge' : 'verifier';
+    return [{
+      run_id: result.id,
+      message: result.result.success_details ?? status,
+      type: result.result.error_type ?? status,
+      phase,
+    }];
+  });
+  const allErrors = [...errors, ...resultErrors];
 
   return {
     name: config.name,
@@ -156,11 +199,11 @@ export function summarizeBenchmark(
     duration_seconds: durationSeconds,
     total_runs: totalRuns,
     successful_runs: successful,
-    failed_runs: results.length - successful,
-    errored_runs: errors.length,
+    failed_runs: failed,
+    errored_runs: allErrors.length,
     total_cost_usd: results.reduce((sum, r) => sum + (r.metrics?.cost_usd ?? 0), 0),
     total_score: results.reduce((sum, r) => sum + (r.score?.value ?? 0), 0),
-    errors,
+    errors: allErrors,
   };
 }
 
@@ -194,21 +237,29 @@ export async function runBenchmark(
       return runResult;
     } catch (error) {
       completed++;
-      const message = error instanceof Error ? error.message : String(error);
-      options.onProgress?.({ completed, total: matrix.specs.length, spec, error: message });
-      throw error;
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      const classified = classifyThrownError(spec.runId, normalized);
+      options.onProgress?.({
+        completed,
+        total: matrix.specs.length,
+        spec,
+        error: classified.message,
+        errorType: classified.type,
+        errorPhase: classified.phase,
+      });
+      throw normalized;
     }
   });
 
   const results: RunResult[] = [];
-  const errors: { run_id: string; message: string }[] = [];
+  const errors: BenchmarkError[] = [];
 
   for (let i = 0; i < poolResults.length; i++) {
     const poolResult = poolResults[i];
     if (poolResult.ok) {
       results.push(poolResult.value);
     } else {
-      errors.push({ run_id: matrix.specs[i].runId, message: poolResult.error.message });
+      errors.push(classifyThrownError(matrix.specs[i].runId, poolResult.error));
     }
   }
 

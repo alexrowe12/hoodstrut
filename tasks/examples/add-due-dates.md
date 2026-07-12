@@ -2,12 +2,14 @@
 id: add-due-dates
 title: Add due date support to todos
 repo: ./repos/todo-app
-ai_judge: true
-ai_judge_criteria: |
-  The task is successful if:
-  - Todos can carry an optional due date (e.g. a `due` field on the todo object)
-  - The change is wired through the store/API, not just an unused helper
-  - Existing todo behavior (add/list/complete) is preserved
+verification:
+  type: ai_judge
+  evidence_command: node --test test/todo.test.js
+  criteria: |
+    The task is successful if:
+    - Todos can carry an optional due date (e.g. a `due` field on the todo object)
+    - The change is wired through the store/API, not just an unused helper
+    - Existing todo behavior (add/list/complete) is preserved
 difficulty: medium
 tags: [feature, ai-judge]
 ---

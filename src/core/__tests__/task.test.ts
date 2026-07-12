@@ -7,6 +7,7 @@ describe('TaskSchema', () => {
       id: 'test-task',
       title: 'Test Task',
       repo: './repos/test-app',
+      verification: { type: 'command', command: 'npm test' },
     };
 
     const result = TaskSchema.safeParse(data);
@@ -24,10 +25,11 @@ describe('TaskSchema', () => {
       title: 'Complete Task',
       repo: 'https://github.com/example/repo',
       branch: 'develop',
-      success_command: 'npm test',
-      success_patterns: ['All tests passed'],
-      ai_judge: true,
-      ai_judge_criteria: 'Code should be well-structured',
+      verification: {
+        type: 'ai_judge',
+        evidence_command: 'npm test',
+        criteria: 'Code should be well-structured',
+      },
       timeout: 600,
       working_dir: 'src',
       setup_commands: ['npm install'],
@@ -49,6 +51,7 @@ describe('TaskSchema', () => {
     const data = {
       title: 'Test Task',
       repo: './repos/test-app',
+      verification: { type: 'command', command: 'npm test' },
     };
 
     const result = TaskSchema.safeParse(data);
@@ -59,6 +62,7 @@ describe('TaskSchema', () => {
     const data = {
       id: 'test-task',
       title: 'Test Task',
+      verification: { type: 'command', command: 'npm test' },
     };
 
     const result = TaskSchema.safeParse(data);
@@ -73,6 +77,7 @@ describe('TaskSchema', () => {
         id: 'test-task',
         title: 'Test Task',
         repo: './repos/test-app',
+        verification: { type: 'command', command: 'npm test' },
         difficulty,
       };
 
@@ -86,6 +91,7 @@ describe('TaskSchema', () => {
       id: 'test-task',
       title: 'Test Task',
       repo: './repos/test-app',
+      verification: { type: 'command', command: 'npm test' },
       difficulty: 'impossible',
     };
 
@@ -98,6 +104,7 @@ describe('TaskSchema', () => {
       id: 'test-task',
       title: 'Test Task',
       repo: './repos/test-app',
+      verification: { type: 'command', command: 'npm test' },
     };
 
     const result = TaskSchema.safeParse(data);
@@ -107,11 +114,55 @@ describe('TaskSchema', () => {
     }
   });
 
+  it('rejects a task without explicit verification', () => {
+    const result = TaskSchema.safeParse({
+      id: 'unverified',
+      title: 'Unverified',
+      repo: './repos/test-app',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('normalizes an unambiguous legacy command', () => {
+    const result = TaskSchema.parse({
+      id: 'legacy',
+      title: 'Legacy',
+      repo: './repos/test-app',
+      success_command: 'npm test',
+    });
+    expect(result.verification).toEqual({ type: 'command', command: 'npm test' });
+  });
+
+  it('rejects legacy prose-only patterns', () => {
+    const result = TaskSchema.safeParse({
+      id: 'unsafe-patterns',
+      title: 'Unsafe patterns',
+      repo: './repos/test-app',
+      success_patterns: ['task complete'],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects invalid regular expressions', () => {
+    const result = TaskSchema.safeParse({
+      id: 'bad-regex',
+      title: 'Bad regex',
+      repo: './repos/test-app',
+      verification: {
+        type: 'pattern',
+        command: 'npm test',
+        patterns: ['[invalid'],
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('defaults ai_judge to false when not provided', () => {
     const data = {
       id: 'test-task',
       title: 'Test Task',
       repo: './repos/test-app',
+      verification: { type: 'command', command: 'npm test' },
     };
 
     const result = TaskSchema.safeParse(data);

@@ -57,9 +57,11 @@ taskCommand
         console.log(`Difficulty: ${task.difficulty}`);
       }
 
-      if (task.success_command) {
-        console.log(`Success Command: ${task.success_command}`);
-      }
+      console.log(`Verification: ${task.verification.type}`);
+      const verificationCommand = task.verification.type === 'ai_judge'
+        ? task.verification.evidence_command
+        : task.verification.command;
+      console.log(`Verification Command: ${verificationCommand}`);
 
       if (task.tags && task.tags.length > 0) {
         console.log(`Tags: ${task.tags.join(', ')}`);

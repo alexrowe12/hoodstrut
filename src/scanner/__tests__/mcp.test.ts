@@ -22,6 +22,8 @@ describe('scanMcpServers', () => {
     expect(result.global).toEqual([]);
     expect(result.project).toEqual([]);
     expect(result.merged).toEqual([]);
+    expect(result.requiredEnvVars).toEqual([]);
+    expect(result.warnings).toEqual([]);
   });
 
   it('should parse project .mcp.json', async () => {
@@ -48,6 +50,57 @@ describe('scanMcpServers', () => {
     expect(result.project[0].command).toBe('npx');
     expect(result.project[0].args).toEqual(['-y', '@anthropic/mcp-server-github']);
     expect(result.project[0].env?.GITHUB_TOKEN).toBe('${GITHUB_TOKEN}');
+    expect(result.requiredEnvVars).toContain('GITHUB_TOKEN');
+  });
+
+  it('replaces literal MCP environment values without retaining the secret', async () => {
+    const secret = 'ghp_do-not-persist-this';
+    await writeFile(
+      join(projectDir, '.mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          github: {
+            command: 'npx',
+            env: {
+              GITHUB_TOKEN: secret,
+              API_TOKEN: '${API_TOKEN:-unsafe-default}',
+            },
+          },
+        },
+      })
+    );
+
+    const result = await scanMcpServers(projectDir);
+    const serialized = JSON.stringify(result);
+
+    expect(result.project[0].env).toEqual({
+      GITHUB_TOKEN: '${GITHUB_TOKEN}',
+      API_TOKEN: '${API_TOKEN}',
+    });
+    expect(result.requiredEnvVars).toEqual(['API_TOKEN', 'GITHUB_TOKEN']);
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain('unsafe-default');
+  });
+
+  it('omits invalid environment names without exposing their values', async () => {
+    const secret = 'do-not-log-this';
+    await writeFile(
+      join(projectDir, '.mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          unsafe: {
+            command: 'node',
+            env: { 'INVALID-NAME': secret },
+          },
+        },
+      })
+    );
+
+    const result = await scanMcpServers(projectDir);
+
+    expect(result.project[0].env).toEqual({});
+    expect(result.warnings[0]).toContain('INVALID-NAME');
+    expect(result.warnings[0]).not.toContain(secret);
   });
 
   it('should parse HTTP MCP servers', async () => {

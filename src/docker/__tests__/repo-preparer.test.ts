@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { execa } from 'execa';
 import { dir as tmpDir } from 'tmp-promise';
 import { prepareRepo, cleanupRepo } from '../repo-preparer.js';
 
@@ -64,6 +66,23 @@ describe('repo-preparer', () => {
       ).rejects.toThrow();
     });
 
+    it('preserves files and directories whose names only contain .git', async () => {
+      await mkdir(join(sourceDir, '.github', 'workflows'), { recursive: true });
+      await mkdir(join(sourceDir, 'docs', '.git-notes'), { recursive: true });
+      await writeFile(join(sourceDir, '.gitignore'), 'node_modules/\n');
+      await writeFile(join(sourceDir, '.gitmodules'), '[submodule "example"]\n');
+      await writeFile(join(sourceDir, '.github', 'workflows', 'ci.yml'), 'name: CI\n');
+      await writeFile(join(sourceDir, 'docs', '.git-notes', 'README.md'), 'notes\n');
+
+      const targetDir = join(destDir, 'workspace');
+      await prepareRepo({ repo: sourceDir, branch: 'main', destDir: targetDir });
+
+      await expect(readFile(join(targetDir, '.gitignore'), 'utf-8')).resolves.toBe('node_modules/\n');
+      await expect(readFile(join(targetDir, '.gitmodules'), 'utf-8')).resolves.toContain('submodule');
+      await expect(readFile(join(targetDir, '.github', 'workflows', 'ci.yml'), 'utf-8')).resolves.toBe('name: CI\n');
+      await expect(readFile(join(targetDir, 'docs', '.git-notes', 'README.md'), 'utf-8')).resolves.toBe('notes\n');
+    });
+
     it('throws error for non-existent local path', async () => {
       await expect(
         prepareRepo({
@@ -72,6 +91,30 @@ describe('repo-preparer', () => {
           destDir: join(destDir, 'workspace'),
         })
       ).rejects.toThrow('Failed to copy local repository');
+    });
+  });
+
+  describe('prepareRepo with Git URL', () => {
+    it('preserves project Git files but removes source repository metadata', async () => {
+      await execa('git', ['init', '--quiet', '--initial-branch', 'main'], { cwd: sourceDir });
+      await execa('git', ['config', 'user.email', 'test@example.com'], { cwd: sourceDir });
+      await execa('git', ['config', 'user.name', 'Test'], { cwd: sourceDir });
+      await mkdir(join(sourceDir, '.github', 'workflows'), { recursive: true });
+      await writeFile(join(sourceDir, '.gitignore'), 'node_modules/\n');
+      await writeFile(join(sourceDir, '.github', 'workflows', 'ci.yml'), 'name: CI\n');
+      await execa('git', ['add', '--all'], { cwd: sourceDir });
+      await execa('git', ['commit', '--quiet', '-m', 'fixture'], { cwd: sourceDir });
+
+      const targetDir = join(destDir, 'workspace');
+      await prepareRepo({
+        repo: pathToFileURL(sourceDir).href,
+        branch: 'main',
+        destDir: targetDir,
+      });
+
+      await expect(readFile(join(targetDir, '.gitignore'), 'utf-8')).resolves.toBe('node_modules/\n');
+      await expect(readFile(join(targetDir, '.github', 'workflows', 'ci.yml'), 'utf-8')).resolves.toBe('name: CI\n');
+      await expect(readFile(join(targetDir, '.git', 'HEAD'), 'utf-8')).rejects.toThrow();
     });
   });
 

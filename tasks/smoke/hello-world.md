@@ -2,7 +2,9 @@
 id: hello-world
 title: Create a hello world script
 repo: ./repos/todo-app
-success_command: node hello.js
+verification:
+  type: command
+  command: node hello.js
 difficulty: easy
 tags: [intro, quickstart]
 ---

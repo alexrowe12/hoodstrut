@@ -2,7 +2,9 @@
 id: fix-todo-persistence
 title: Todos don't persist after restart
 repo: ./repos/todo-app
-success_command: npm test
+verification:
+  type: command
+  command: npm test
 difficulty: easy
 tags: [bugfix, storage]
 ---

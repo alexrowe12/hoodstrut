@@ -6,15 +6,12 @@
  * Usage: node run-sdk.mjs <task-prompt>
  *
  * Environment variables:
- * - SETUP_COMMANDS: JSON array of setup commands to run first
- * - SUCCESS_COMMAND: Command to run after Claude Code to verify success
  * - WORKING_DIR: Working directory for Claude Code
- * - METRICS_FILE: Path to write metrics JSON (default: /workspace/.metrics.json)
+ * - METRICS_FILE: Path to write metrics JSON
  * - All OTEL_* and CLAUDE_* env vars are passed through
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { execSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 
 async function main() {
@@ -25,26 +22,8 @@ async function main() {
     process.exit(1);
   }
 
-  const setupCommands = process.env.SETUP_COMMANDS;
-  const successCommand = process.env.SUCCESS_COMMAND;
   const workingDir = process.env.WORKING_DIR || '/workspace';
-  const metricsFile = process.env.METRICS_FILE || '/workspace/.metrics.json';
-
-  // Run setup commands if provided
-  if (setupCommands && setupCommands !== '[]') {
-    console.log('=== Running setup commands ===');
-    try {
-      const commands = JSON.parse(setupCommands);
-      for (const cmd of commands) {
-        console.log(`$ ${cmd}`);
-        execSync(cmd, { stdio: 'inherit', cwd: workingDir });
-      }
-      console.log('=== Setup complete ===');
-    } catch (error) {
-      console.error('Setup failed:', error);
-      process.exit(1);
-    }
-  }
+  const metricsFile = process.env.METRICS_FILE || '/hoodstrut-artifacts/metrics.json';
 
   // Change to working directory
   process.chdir(workingDir);
@@ -156,22 +135,7 @@ async function main() {
   writeFileSync(metricsFile, JSON.stringify(metrics, null, 2));
   console.log(`Metrics written to ${metricsFile}`);
 
-  // Run success command if provided
-  let successExit = 0;
-  if (successCommand) {
-    console.log(`=== Running success command: ${successCommand} ===`);
-    try {
-      execSync(successCommand, { stdio: 'inherit', cwd: workingDir });
-      console.log('=== Success command passed ===');
-    } catch {
-      console.log('=== Success command failed ===');
-      successExit = 1;
-    }
-  }
-
-  // Exit with appropriate code
-  const finalExit = successCommand ? successExit : (metrics.success ? 0 : 1);
-  process.exit(finalExit);
+  process.exit(metrics.success ? 0 : 1);
 }
 
 main().catch((error) => {

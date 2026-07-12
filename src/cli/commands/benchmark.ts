@@ -108,12 +108,20 @@ export const benchmarkCommand = new Command('benchmark')
           const counter = chalk.gray(`[${progress.completed}/${progress.total}]`);
 
           if (progress.error !== undefined) {
-            console.log(`${counter} ${chalk.yellow('⚠')} ${label}  ${chalk.yellow(`error: ${progress.error}`)}`);
+            const kind = progress.errorType ?? 'error';
+            console.log(`${counter} ${chalk.yellow('ERROR')} ${label}  ${chalk.yellow(`${kind}: ${progress.error}`)}`);
             return;
           }
 
           const result = progress.result!;
-          const mark = result.result.success ? chalk.green('✓') : chalk.red('✗');
+          const status = result.result.status ?? (result.result.success ? 'passed' : 'failed');
+          const mark = status === 'passed'
+            ? chalk.green('✓')
+            : status === 'timed_out'
+              ? chalk.red('TIMEOUT')
+              : status.endsWith('_error')
+                ? chalk.yellow('ERROR')
+                : chalk.red('✗');
           const cost = result.metrics ? formatCost(result.metrics.cost_usd) : '-';
           const duration = result.metrics ? formatDuration(result.metrics.duration_seconds) : '-';
           const score = result.score ? `score ${result.score.value.toLocaleString()}` : 'score -';

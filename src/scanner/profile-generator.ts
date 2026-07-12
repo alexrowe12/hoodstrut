@@ -5,6 +5,8 @@ import type { ScanResult } from './index.js';
 export interface GeneratedProfile {
   yaml: string;
   profile: Profile;
+  requiredEnvVars: string[];
+  warnings: string[];
 }
 
 function mapEffortLevel(effort?: string): 'low' | 'medium' | 'high' {
@@ -81,5 +83,10 @@ export function generateProfile(scanResult: ScanResult, name: string): Generated
 
   const yaml = header + yamlStringify(profile);
 
-  return { yaml, profile };
+  return {
+    yaml,
+    profile,
+    requiredEnvVars: scanResult.mcpServers.requiredEnvVars,
+    warnings: scanResult.mcpServers.warnings,
+  };
 }

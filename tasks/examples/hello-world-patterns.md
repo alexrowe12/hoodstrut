@@ -2,10 +2,12 @@
 id: hello-world-patterns
 title: Create hello world with success patterns
 repo: ./repos/todo-app
-success_patterns:
-  - "Hello.*World"
-  - "created.*file"
-  - "task complete"
+verification:
+  type: pattern
+  command: node hello.js
+  patterns:
+    - "^Hello.*World!?$"
+  match: all
 difficulty: easy
 tags: [hello-world, pattern-test]
 ---
@@ -21,5 +23,5 @@ Create a simple hello world file.
 
 ## Notes
 
-This task uses regex pattern matching for success evaluation.
-The patterns are case-insensitive and checked against stdout/stderr.
+This task matches a regex against the output produced by `node hello.js`.
+Assistant conversation is never used as verification evidence.

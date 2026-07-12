@@ -33,6 +33,7 @@ WORKDIR /workspace
 # Copy entrypoint scripts (both old shell and new SDK-based)
 COPY scripts/run-task.sh /run-task.sh
 COPY scripts/run-sdk.mjs /run-sdk.mjs
+COPY scripts/run-phase.mjs /run-phase.mjs
 RUN chmod +x /run-task.sh
 
 # Default to SDK-based entrypoint

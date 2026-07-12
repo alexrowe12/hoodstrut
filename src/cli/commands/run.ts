@@ -91,8 +91,13 @@ export const runCommand = new Command('run')
       console.log(chalk.bold('=== Execution Complete ==='));
       console.log('');
 
-      if (runResult.result.success) {
+      const status = runResult.result.status ?? (runResult.result.success ? 'passed' : 'failed');
+      if (status === 'passed') {
         console.log(chalk.green(`✓ Success`));
+      } else if (status === 'timed_out') {
+        console.log(chalk.red('✗ Timed out'));
+      } else if (status.endsWith('_error')) {
+        console.log(chalk.yellow(`⚠ Error: ${status}`));
       } else {
         console.log(chalk.red(`✗ Failed (exit code: ${runResult.result.exit_code})`));
       }

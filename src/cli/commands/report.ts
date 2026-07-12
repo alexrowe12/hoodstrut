@@ -36,6 +36,14 @@ function backfillScore(result: RunResult): RunResult {
     return result;
   }
 
+  if (result.result.status && [
+    'agent_error',
+    'verification_error',
+    'judge_error',
+  ].includes(result.result.status)) {
+    return result;
+  }
+
   const score = calculateScore({
     success: result.result.success,
     actualCost: result.metrics?.cost_usd ?? null,

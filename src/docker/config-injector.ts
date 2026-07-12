@@ -118,5 +118,24 @@ export function buildEnvVars(profile: Profile, telemetry?: TelemetryConfig): Rec
     Object.assign(env, profile.settings.env);
   }
 
+  const referencePattern = /\$\{([A-Za-z_][A-Za-z0-9_]*)(:-[^}]*)?\}/g;
+  for (const server of profile.mcp_servers ?? []) {
+    for (const value of Object.values(server.env ?? {})) {
+      for (const match of value.matchAll(referencePattern)) {
+        const variable = match[1];
+        const hasDefault = match[2] !== undefined;
+        const resolved = env[variable] ?? process.env[variable];
+
+        if (resolved !== undefined) {
+          env[variable] = resolved;
+        } else if (!hasDefault) {
+          throw new Error(
+            `Profile "${profile.name}" requires ${variable} for MCP server "${server.name}"`
+          );
+        }
+      }
+    }
+  }
+
   return env;
 }

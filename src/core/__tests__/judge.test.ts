@@ -1,183 +1,89 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@anthropic-ai/sdk', () => {
-  return {
-    default: vi.fn().mockImplementation(() => ({
-      messages: {
-        create: vi.fn(),
-      },
-    })),
-  };
-});
+vi.mock('@anthropic-ai/sdk', () => ({
+  default: vi.fn().mockImplementation(() => ({ messages: { create: vi.fn() } })),
+}));
 
 import Anthropic from '@anthropic-ai/sdk';
-import { evaluateWithJudge } from '../judge.js';
+import {
+  buildJudgePrompt,
+  evaluateWithJudge,
+  JudgeEvaluationError,
+} from '../judge.js';
 
 const MockedAnthropic = vi.mocked(Anthropic);
+const validResponse = {
+  success: true,
+  reasoning: 'The patch and tests satisfy the task',
+  confidence: 'high',
+  criteria: [{ criterion: 'Login works', met: true, evidence: 'Test output and handler patch' }],
+};
 
-describe('evaluateWithJudge', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  const baseInput = {
-    taskTitle: 'Fix the bug',
-    taskBody: 'The login button is broken',
-    stdout: 'Fixed login handler',
-    stderr: '',
+const baseInput = {
+  taskTitle: 'Fix the bug',
+  taskBody: 'The login button is broken',
+  judgeCriteria: 'The login flow works and tests pass',
+  patch: 'diff --git a/src/login.ts b/src/login.ts\n+handleLogin();',
+  manifest: '{"files":[{"path":"src/login.ts","status":"modified"}]}',
+  agentExitCode: 0,
+  verifier: {
+    command: 'npm test',
     exitCode: 0,
-    filesChanged: {
-      modified: ['src/login.ts'],
-      created: [],
-      deleted: [],
-    },
-  };
+    stdout: '12 tests passed',
+    stderr: '',
+  },
+};
 
-  it('returns success when judge says success', async () => {
-    const mockCreate = vi.fn().mockResolvedValue({
-      content: [
-        {
-          type: 'text',
-          text: '{"success": true, "reasoning": "Task completed", "confidence": "high"}',
-        },
-      ],
-    });
+function mockResponse(text: string) {
+  const create = vi.fn().mockResolvedValue({ content: [{ type: 'text', text }] });
+  MockedAnthropic.mockImplementation(() => ({ messages: { create } }) as unknown as Anthropic);
+  return create;
+}
 
-    MockedAnthropic.mockImplementation(() => ({
-      messages: { create: mockCreate },
-    }) as unknown as Anthropic);
+describe('AI judge', () => {
+  beforeEach(() => vi.clearAllMocks());
 
+  it('returns a strictly validated judgment', async () => {
+    mockResponse(JSON.stringify(validResponse));
     const result = await evaluateWithJudge(baseInput);
-
-    expect(result.success).toBe(true);
-    expect(result.reasoning).toBe('Task completed');
-    expect(result.confidence).toBe('high');
+    expect(result).toMatchObject(validResponse);
+    expect(result.rawResponse).toBe(JSON.stringify(validResponse));
   });
 
-  it('returns failure when judge says failure', async () => {
-    const mockCreate = vi.fn().mockResolvedValue({
-      content: [
-        {
-          type: 'text',
-          text: '{"success": false, "reasoning": "Tests still failing", "confidence": "high"}',
-        },
-      ],
-    });
-
-    MockedAnthropic.mockImplementation(() => ({
-      messages: { create: mockCreate },
-    }) as unknown as Anthropic);
-
-    const result = await evaluateWithJudge(baseInput);
-
-    expect(result.success).toBe(false);
-    expect(result.reasoning).toBe('Tests still failing');
+  it('includes patch, manifest, and verifier evidence but no assistant conversation', () => {
+    const prompt = buildJudgePrompt(baseInput);
+    expect(prompt).toContain('handleLogin');
+    expect(prompt).toContain('src/login.ts');
+    expect(prompt).toContain('12 tests passed');
+    expect(prompt).not.toContain('assistant output');
   });
 
-  it('handles JSON embedded in text', async () => {
-    const mockCreate = vi.fn().mockResolvedValue({
-      content: [
-        {
-          type: 'text',
-          text: 'Based on my analysis:\n{"success": true, "reasoning": "All criteria met", "confidence": "medium"}\nEnd of response.',
-        },
-      ],
+  it('rejects malformed prose instead of inferring success', async () => {
+    mockResponse('The task was a success, everything looks good.');
+    await expect(evaluateWithJudge(baseInput)).rejects.toMatchObject({
+      code: 'judge_invalid_response',
     });
-
-    MockedAnthropic.mockImplementation(() => ({
-      messages: { create: mockCreate },
-    }) as unknown as Anthropic);
-
-    const result = await evaluateWithJudge(baseInput);
-
-    expect(result.success).toBe(true);
-    expect(result.reasoning).toBe('All criteria met');
-    expect(result.confidence).toBe('medium');
   });
 
-  it('handles malformed JSON gracefully', async () => {
-    const mockCreate = vi.fn().mockResolvedValue({
-      content: [
-        {
-          type: 'text',
-          text: 'The task was a success, everything looks good.',
-        },
-      ],
-    });
-
-    MockedAnthropic.mockImplementation(() => ({
-      messages: { create: mockCreate },
-    }) as unknown as Anthropic);
-
-    const result = await evaluateWithJudge(baseInput);
-
-    expect(result.success).toBe(true);
-    expect(result.confidence).toBe('low');
+  it('rejects JSON missing criterion-level evidence', async () => {
+    mockResponse('{"success":true,"reasoning":"Looks good","confidence":"high"}');
+    await expect(evaluateWithJudge(baseInput)).rejects.toBeInstanceOf(JudgeEvaluationError);
   });
 
-  it('infers failure from text when JSON malformed', async () => {
-    const mockCreate = vi.fn().mockResolvedValue({
-      content: [
-        {
-          type: 'text',
-          text: 'The task was not successful, there were errors.',
-        },
-      ],
+  it('classifies API failures', async () => {
+    const create = vi.fn().mockRejectedValue(new Error('service unavailable'));
+    MockedAnthropic.mockImplementation(() => ({ messages: { create } }) as unknown as Anthropic);
+    await expect(evaluateWithJudge(baseInput)).rejects.toMatchObject({
+      code: 'judge_request_failed',
     });
-
-    MockedAnthropic.mockImplementation(() => ({
-      messages: { create: mockCreate },
-    }) as unknown as Anthropic);
-
-    const result = await evaluateWithJudge(baseInput);
-
-    expect(result.success).toBe(false);
-    expect(result.confidence).toBe('low');
   });
 
-  it('includes custom judge criteria in prompt', async () => {
-    const mockCreate = vi.fn().mockResolvedValue({
-      content: [
-        {
-          type: 'text',
-          text: '{"success": true, "reasoning": "Met custom criteria", "confidence": "high"}',
-        },
-      ],
-    });
-
-    MockedAnthropic.mockImplementation(() => ({
-      messages: { create: mockCreate },
-    }) as unknown as Anthropic);
-
-    await evaluateWithJudge({
-      ...baseInput,
-      judgeCriteria: 'Must add unit tests',
-    });
-
-    const callArgs = mockCreate.mock.calls[0][0];
-    expect(callArgs.messages[0].content).toContain('Must add unit tests');
-  });
-
-  it('uses correct model and parameters', async () => {
-    const mockCreate = vi.fn().mockResolvedValue({
-      content: [
-        {
-          type: 'text',
-          text: '{"success": true, "reasoning": "OK", "confidence": "high"}',
-        },
-      ],
-    });
-
-    MockedAnthropic.mockImplementation(() => ({
-      messages: { create: mockCreate },
-    }) as unknown as Anthropic);
-
-    await evaluateWithJudge(baseInput);
-
-    const callArgs = mockCreate.mock.calls[0][0];
-    expect(callArgs.model).toBe('claude-sonnet-5');
-    expect(callArgs.max_tokens).toBe(500);
-    expect(callArgs.system).toBeDefined();
-    expect(callArgs.messages).toHaveLength(1);
+  it('uses the configured judge model and evidence budget', async () => {
+    const create = mockResponse(JSON.stringify(validResponse));
+    await evaluateWithJudge({ ...baseInput, patch: 'x'.repeat(40_000) });
+    const request = create.mock.calls[0][0];
+    expect(request.model).toBe('claude-sonnet-5');
+    expect(request.max_tokens).toBe(1000);
+    expect(request.messages[0].content).toContain('patch truncated');
   });
 });

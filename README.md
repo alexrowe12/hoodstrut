@@ -73,7 +73,9 @@ fixes it. A no-op run **fails** — the benchmark actually discriminates.
 Scaffold `profiles/`, `tasks/`, `benchmarks/`, `results/`, and a `.env.example`.
 When run in an interactive terminal it also prompts for your `ANTHROPIC_API_KEY`
 and writes it to `.env` (leave the prompt blank to skip; it's skipped
-automatically when stdin isn't a TTY). Never overwrites existing files.
+automatically when stdin isn't a TTY). It also creates or updates the root
+`.gitignore` so `.env`, local environment files, results, and telemetry logs
+cannot be committed accidentally. Existing files and ignore rules are preserved.
 
 | Flag | Description |
 |------|-------------|
@@ -129,7 +131,10 @@ hoodstrut profile scan --name my-setup     # import your ~/.claude config
 ```
 `scan` flags: `-n/--name`, `-p/--path <dir>` (default `~/.claude`), `-o/--output`
 (default `./profiles`), `--project` (scan `.claude/` in the cwd), `--dry-run`,
-`--validate`. Environment variables are referenced (`${VAR}`), never copied.
+`--validate`. MCP environment values are replaced with `${VAR}` references,
+never copied into generated profile YAML. Set every required variable in `.env`
+or the host environment before running that profile; hoodstrut forwards the
+resolved value to the container without writing it back to the profile.
 
 ### `hoodstrut task`
 ```bash
@@ -187,13 +192,10 @@ id: fix-todo-persistence      # required
 title: Todos don't persist    # required
 repo: ./repos/todo-app        # required (local path or public git URL)
 branch: main                  # default: main
-# Success determination — pick one:
-success_command: npm test     # exit 0 = success
-success_patterns:             # any regex match in output = success
-  - "Hello.*World"
-ai_judge: true                # let an AI judge decide
-ai_judge_criteria: |          # criteria for the judge
-  The task is successful if...
+# Explicit verification — required, pick one type:
+verification:
+  type: command               # command | pattern | ai_judge
+  command: npm test           # exit 0 = success
 timeout: 300                  # seconds (overrides profile)
 working_dir: subdir           # working dir relative to repo root
 setup_commands: ["npm install"]
@@ -207,11 +209,37 @@ expected_time: 150            # seconds, scoring baseline (default: 150)
 Markdown body — written like a Jira ticket.
 ```
 
+Pattern verification runs a command and matches only its output, never the
+assistant conversation:
+
+```yaml
+verification:
+  type: pattern
+  command: node hello.js
+  patterns: ["^Hello, World!$"]
+  match: all                  # all (default) | any
+```
+
+AI judging requires both test evidence and explicit criteria. The judge receives
+the repository patch, hashed file manifest, and evidence-command transcript:
+
+```yaml
+verification:
+  type: ai_judge
+  evidence_command: npm test
+  criteria: |
+    The due-date feature is wired through the public API and preserves existing behavior.
+```
+
+Legacy `success_command` tasks are normalized automatically. Legacy pattern-only
+tasks must add a command because conversational claims are not verification.
+
 ---
 
 ## Scoring
 
-Each run with metrics gets a numeric score (runs with no metrics score `null`):
+Each completed pass, failure, or agent timeout with metrics gets a numeric
+score. Infrastructure, agent-process, verifier, and judge errors score `null`:
 
 ```
 score = round( (success_bonus + cost_score + time_score) * difficulty_multiplier )
@@ -235,7 +263,12 @@ results/
 ├── run-<timestamp>/
 │   ├── run-result.json   # metrics, success, score, file changes, warnings
 │   ├── stdout.log
-│   └── stderr.log
+│   ├── stderr.log
+│   ├── changes.patch     # binary-safe diff of agent changes
+│   ├── files-manifest.json # changed paths with before/after hashes
+│   ├── metrics.json      # raw Agent SDK metrics
+│   ├── verifier.log      # verification/evidence command transcript
+│   └── judge-result.json # raw + parsed AI judgment, for judge tasks
 ├── report.md             # aggregate report across all runs
 └── benchmark-<name>-<timestamp>/
     ├── benchmark.json     # summary + per-run results
@@ -249,16 +282,19 @@ results/
 
 ## How a run works
 
-1. **Prepare** — copy the local repo (or `git clone` a public URL) into a temp workspace.
+1. **Prepare** — copy a local working tree or clone a public URL into a normalized source snapshot. Source Git metadata is not reused; `.gitignore`, `.github`, and other project files are preserved.
 2. **Build** — build the `hoodstrut-runner` Docker image once (cached across runs).
 3. **Configure** — inject the profile (CLAUDE.md, `.claude/settings.local.json`, `.mcp.json`, skills).
-4. **Execute** — run Claude Code via the Agent SDK inside the container.
-5. **Capture** — stream stdout/stderr to files; read metrics from the SDK result.
-6. **Verify** — run `success_command` / match patterns / call the AI judge.
-7. **Cleanup** — force-remove the container (containers are named `hoodstrut-*`).
+4. **Set up** — run `setup_commands`, then commit the configured workspace as a clean benchmark-owned Git baseline.
+5. **Execute** — run Claude Code via the Agent SDK inside the container.
+6. **Capture** — retain a binary-safe patch and hashed file manifest before verifier-generated files can alter the workspace evidence.
+7. **Verify** — run the required verification command, match patterns only against its transcript, or give the patch and test evidence to the AI judge.
+8. **Cleanup** — force-remove the containers and temporary workspace (containers are named `hoodstrut-*`).
 
 Metrics always come from the Agent SDK response. The `--telemetry` flag only
 adds OTEL export for your own observability backend; it does not affect metrics.
+Hoodstrut-owned metrics and telemetry files live outside the measured workspace
+and are never reported as agent changes.
 
 ---
 
@@ -270,6 +306,10 @@ adds OTEL export for your own observability backend; it does not affect metrics.
 - **"Not logged in" / auth errors** — `ANTHROPIC_API_KEY` isn't set. Make sure
   it's in a `.env` file in the directory you're running from (hoodstrut loads it
   automatically), or exported in your shell.
+- **`Profile "..." requires VAR for MCP server "..."`** — a scanned MCP server
+  references an environment variable that is not available. Add it to the
+  current project's `.env` file or export it in the host environment. Do not put
+  the literal secret in the profile YAML.
 - **Docker errors** — ensure the daemon is running (`docker ps`). Use `--build`
   to force an image rebuild after changing the Docker assets.
 - **Leftover containers** — hoodstrut names containers `hoodstrut-*` and

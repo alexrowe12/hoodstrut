@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { mkdir, writeFile, cp, access } from 'node:fs/promises';
+import { mkdir, writeFile, cp, access, readFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline/promises';
@@ -29,6 +29,43 @@ const ENV_EXAMPLE = `# Copy this file to .env and fill in your key.
 # variable of the same name still takes precedence over this file.
 ANTHROPIC_API_KEY=
 `;
+
+const GITIGNORE_RULES = [
+  '# hoodstrut',
+  '.env',
+  '.env.*',
+  '!.env.example',
+  'results/',
+  'otel_logs/',
+];
+const GITIGNORE_BLOCK = GITIGNORE_RULES.join('\n');
+
+export type GitignoreUpdate = 'created' | 'updated' | 'unchanged';
+
+/** Ensure generated credentials and run artifacts cannot be committed by accident. */
+export async function ensureGitignore(cwd: string): Promise<GitignoreUpdate> {
+  const path = join(cwd, '.gitignore');
+  let content: string;
+
+  try {
+    content = await readFile(path, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+    await writeFile(path, `${GITIGNORE_BLOCK}\n`, 'utf-8');
+    return 'created';
+  }
+
+  // The block must be last so an earlier negation cannot re-allow credentials.
+  if (content.trimEnd().endsWith(GITIGNORE_BLOCK)) {
+    return 'unchanged';
+  }
+
+  const separator = content.length === 0 || content.endsWith('\n') ? '' : '\n';
+  await writeFile(path, `${content}${separator}${GITIGNORE_BLOCK}\n`, 'utf-8');
+  return 'updated';
+}
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -86,6 +123,16 @@ export const initCommand = new Command('init')
     } else {
       await writeFile(envExamplePath, ENV_EXAMPLE);
       created.push('.env.example');
+    }
+
+    // Protect credentials before offering to write a real .env file.
+    const gitignoreUpdate = await ensureGitignore(cwd);
+    if (gitignoreUpdate === 'created') {
+      created.push('.gitignore');
+    } else if (gitignoreUpdate === 'updated') {
+      created.push('.gitignore (updated)');
+    } else {
+      skipped.push('.gitignore (already configured)');
     }
 
     // 2b. Offer to capture the key straight into a real .env. hoodstrut loads

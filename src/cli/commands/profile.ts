@@ -155,19 +155,27 @@ profileCommand
         }
 
         console.log(chalk.bold('\nEnvironment Variables:'));
-        if (scanResult.env.claudeCodeVars.length > 0) {
-          for (const varName of scanResult.env.claudeCodeVars) {
+        const envVars = new Set([
+          ...scanResult.env.claudeCodeVars,
+          ...scanResult.mcpServers.requiredEnvVars,
+        ]);
+        if (envVars.size > 0) {
+          for (const varName of [...envVars].sort()) {
             console.log(`  - ${varName}`);
           }
         } else {
           console.log('  (none found)');
         }
 
+        for (const warning of scanResult.mcpServers.warnings) {
+          console.log(chalk.yellow(`  Warning: ${warning}`));
+        }
+
         console.log(chalk.yellow('\n(dry-run mode - no files written)'));
         return;
       }
 
-      const { yaml, profile } = await generateProfileFromScan({
+      const { yaml, profile, requiredEnvVars, warnings } = await generateProfileFromScan({
         path: options.path,
         project: options.project,
         name: options.name,
@@ -191,6 +199,12 @@ profileCommand
       }
       if (profile.system_prompt) {
         console.log(`  System Prompt: ${profile.system_prompt.length} characters`);
+      }
+      if (requiredEnvVars.length > 0) {
+        console.log(`  Required environment: ${requiredEnvVars.join(', ')}`);
+      }
+      for (const warning of warnings) {
+        console.log(chalk.yellow(`  Warning: ${warning}`));
       }
 
       if (options.validate) {

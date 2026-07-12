@@ -14,6 +14,17 @@ export interface ExecutorOptions {
 export interface ExecutionResult {
   containerId: string;
   exitCode: number;
+  agentExitCode: number;
+  agentTimedOut: boolean;
+  verifierExitCode?: number;
+  verifier?: {
+    command: string;
+    exitCode: number;
+    timedOut: boolean;
+    duration: number;
+    stdout: string;
+    stderr: string;
+  };
   duration: number;
   stdout: string;
   stderr: string;
@@ -23,6 +34,11 @@ export interface ExecutionResult {
     modified: string[];
     created: string[];
     deleted: string[];
+  };
+  artifacts: {
+    changesPatch: string;
+    filesManifest: string;
+    verifierOutput?: string;
   };
   metrics: MetricsResult;
 }

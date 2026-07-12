@@ -14,6 +14,8 @@ describe('generateProfile', () => {
       global: [],
       project: [],
       merged: [],
+      requiredEnvVars: [],
+      warnings: [],
     },
     prompt: null,
     skills: [],
@@ -103,16 +105,21 @@ describe('generateProfile', () => {
             name: 'github',
             command: 'npx',
             args: ['-y', '@anthropic/mcp-server-github'],
+            env: { GITHUB_TOKEN: '${GITHUB_TOKEN}' },
           },
         ],
+        requiredEnvVars: ['GITHUB_TOKEN'],
+        warnings: [],
       },
     };
 
-    const { profile, yaml } = generateProfile(scanResult, 'test');
+    const { profile, yaml, requiredEnvVars } = generateProfile(scanResult, 'test');
 
     expect(profile.mcp_servers).toHaveLength(1);
     expect(profile.mcp_servers?.[0].name).toBe('github');
     expect(yaml).toContain('mcp_servers:');
+    expect(yaml).toContain('${GITHUB_TOKEN}');
+    expect(requiredEnvVars).toEqual(['GITHUB_TOKEN']);
   });
 
   it('should include system prompt from CLAUDE.md', () => {
