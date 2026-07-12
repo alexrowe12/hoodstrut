@@ -5,15 +5,16 @@
 name: example-suite
 
 profiles:
-  # Bare names resolve to ./profiles/<name>.yaml; paths are used as-is
+  # Bare names resolve to ./profiles/<name>.yaml; paths are used as-is.
+  # default (Sonnet) vs fast (Haiku) gives an easy cost/score contrast.
   - profiles/examples/default.yaml
-  - profiles/examples/aggressive.yaml
+  - profiles/examples/fast.yaml
 
 tasks:
-  # Bare ids resolve to ./tasks/<id>.md; paths are used as-is
-  - tasks/examples/hello-world.md
-  - tasks/examples/hello-world-patterns.md
-  - tasks/examples/fix-todo-persistence.md
+  # Bare ids resolve to ./tasks/<id>.md; paths are used as-is.
+  - tasks/examples/fix-todo-persistence.md   # command-verified bugfix
+  - tasks/examples/hello-world-patterns.md   # success-pattern matching
+  - tasks/examples/add-due-dates.md          # AI-judge feature task
 
 # Number of concurrent Docker containers (default: 1)
 parallel: 2

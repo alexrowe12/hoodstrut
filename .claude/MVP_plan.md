@@ -816,12 +816,13 @@ ENTRYPOINT ["node", "/scripts/run-sdk.js"]
 - [x] Comparison reports (`hoodstrut report <dirA> --compare <dirB>` → `comparison.md`)
 - **Design notes:** run pipeline extracted to `src/core/run-pipeline.ts` (shared by `run` and `benchmark`); benchmark exit code is 0 when orchestration completes (task failures are data), 1 only on config/infra errors
 
-### Phase 8: Example Content & Polish
-- [ ] Example profiles (including one scanned from real setup)
-- [ ] Example tasks
-- [ ] Example todo-app repository
-- [ ] README and documentation
-- [ ] `hoodstrut init` command
+### Phase 8: Example Content & Polish ✅
+- [x] Example profiles (default/aggressive/fast; scanner emits current model IDs)
+- [x] Example tasks (fix-todo-persistence, add-due-dates [AI judge], hello-world-patterns; smoke tasks moved to tasks/smoke/)
+- [x] Example todo-app repository (real file-backed app with a genuine, test-detectable persistence bug)
+- [x] README and documentation (full: install, quickstart, commands, schemas, scoring, troubleshooting)
+- [x] `hoodstrut init` command (scaffold + `--with-examples`, bundled via package.json `files`)
+- **Also fixed:** SDK model-selection bug (top-level `options.model`), stale model IDs across scanner + examples, container-orphan hardening (`--name` + `docker kill`/`rm -f` + SIGINT/SIGTERM sweep), and a packaging bug (missing `files` field would have shipped a broken `bin`).
 
 ---
 

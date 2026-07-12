@@ -1,24 +1,10 @@
-const todos = [];
-
-function addTodo(text) {
-  todos.push({ id: todos.length + 1, text, done: false });
-  return todos[todos.length - 1];
-}
-
-function listTodos() {
-  return todos;
-}
-
-function completeTodo(id) {
-  const todo = todos.find(t => t.id === id);
-  if (todo) todo.done = true;
-  return todo;
-}
-
-module.exports = { addTodo, listTodos, completeTodo };
+const { createStore } = require('./store');
 
 if (require.main === module) {
-  console.log("Todo App running");
-  addTodo("Test todo");
-  console.log(listTodos());
+  const store = createStore();
+  console.log('Todo App');
+  store.add('Example todo');
+  console.log(store.list());
 }
+
+module.exports = { createStore };

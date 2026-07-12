@@ -7,6 +7,15 @@
   "bin": {
     "hoodstrut": "./dist/cli/index.js"
   },
+  "files": [
+    "dist",
+    "profiles/examples",
+    "tasks/examples",
+    "tasks/smoke",
+    "repos/todo-app",
+    "benchmarks/example-suite.yaml",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc && cp -r src/docker/templates dist/docker/ && cp -r src/docker/scripts dist/docker/",
     "dev": "tsc --watch",

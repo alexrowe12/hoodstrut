@@ -1,26 +1,28 @@
 ---
-id: add-feature-ai-judge
-title: Add a greeting feature
+id: add-due-dates
+title: Add due date support to todos
 repo: ./repos/todo-app
 ai_judge: true
 ai_judge_criteria: |
   The task is successful if:
-  - A greeting function or feature was added to the codebase
-  - The output indicates the assistant attempted the task
-  - No major errors occurred during execution
-difficulty: easy
-tags: [feature, ai-judge-test]
+  - Todos can carry an optional due date (e.g. a `due` field on the todo object)
+  - The change is wired through the store/API, not just an unused helper
+  - Existing todo behavior (add/list/complete) is preserved
+difficulty: medium
+tags: [feature, ai-judge]
 ---
 
 ## Description
 
-Add a simple greeting feature to the application.
+Product wants due dates on todos so users can track deadlines.
 
 ## Acceptance Criteria
 
-- Add a function that returns a greeting message
-- The greeting should include the time of day (morning/afternoon/evening)
+- Todos can have an optional due date
+- Users can list or filter todos by due date
+- Existing functionality keeps working
 
 ## Notes
 
-This task uses AI judge for success evaluation instead of a command or pattern.
+This task uses the AI judge for success evaluation instead of a command,
+since "add a feature well" is hard to capture in a single exit code.

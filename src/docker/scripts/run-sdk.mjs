@@ -121,9 +121,6 @@ async function main() {
         }
 
         if (message.modelUsage) {
-          const models = Object.keys(message.modelUsage);
-          metrics.model = models[0] || 'unknown';
-
           for (const [model, usage] of Object.entries(message.modelUsage)) {
             metrics.model_usage[model] = {
               input_tokens: usage.inputTokens,
@@ -132,6 +129,17 @@ async function main() {
               cache_write_tokens: usage.cacheCreationInputTokens,
               cost_usd: usage.costUSD,
             };
+          }
+
+          // The primary model is the one that did the most work (by cost), NOT
+          // just the first key: the SDK also reports cheap background/utility
+          // models (e.g. haiku) alongside the configured main model.
+          let maxCost = -1;
+          for (const [model, usage] of Object.entries(metrics.model_usage)) {
+            if (usage.cost_usd > maxCost) {
+              maxCost = usage.cost_usd;
+              metrics.model = model;
+            }
           }
         }
       }
