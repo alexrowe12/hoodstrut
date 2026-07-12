@@ -22,9 +22,6 @@ hypothetical one.
   `.env` file in the current directory automatically (or from a real
   environment variable, which takes precedence) — no `source`/`export` needed.
 
-> **Gotcha — running tests:** `npm test` runs vitest in **watch** mode (never
-> exits). Use `npm run test:run` for a one-shot run.
-
 ---
 
 ## Install
@@ -47,10 +44,9 @@ Without `npm link`, invoke it as `node dist/cli/index.js <command>`.
 
 ```bash
 # 1. Scaffold a project with runnable examples in the current directory.
-#    init prompts for your ANTHROPIC_API_KEY and writes it to .env for you.
 hoodstrut init --with-examples
 
-# 2. (only if you skipped the prompt) add your key by hand
+# 2. Optional: if you skipped the prompt, add your key by hand
 cp .env.example .env        # then edit .env and set ANTHROPIC_API_KEY
 
 # 3. Optional: turn your real Claude Code setup into a profile
@@ -65,7 +61,7 @@ hoodstrut run \
 cat results/report.md
 ```
 
-The `fix-todo-persistence` task ships with a genuine bug: the example todo-app
+The `fix-todo-persistence` task ships with a real example bug: the example todo-app
 never writes todos to disk, so its persistence test fails until the assistant
 fixes it. A no-op run **fails** — the benchmark actually discriminates.
 
@@ -283,7 +279,8 @@ adds OTEL export for your own observability backend; it does not affect metrics.
 
 ```bash
 npm run build       # compile + copy Docker assets to dist/
-npm run test:run    # one-shot tests (NOT `npm test`, which watches)
+npm test            # one-shot test run
+npm run test:watch  # re-run tests on change
 npm run lint
 npm run typecheck
 ```

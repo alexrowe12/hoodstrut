@@ -19,8 +19,8 @@
   "scripts": {
     "build": "tsc && cp -r src/docker/templates dist/docker/ && cp -r src/docker/scripts dist/docker/",
     "dev": "tsc --watch",
-    "test": "vitest",
-    "test:run": "vitest run",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "prepare": "npm run build"
