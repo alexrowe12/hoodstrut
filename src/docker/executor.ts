@@ -1,13 +1,12 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, cp, readFile, rm, writeFile } from 'node:fs/promises';
-import { join, resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { dir as tmpDir } from 'tmp-promise';
 import type { ExecutorOptions, ExecutionResult } from './types.js';
 import type { MetricsResult, RunMetrics } from '../metrics/types.js';
 import { prepareRepo } from './repo-preparer.js';
-import { injectConfig, buildEnvVars } from './config-injector.js';
+import { prepareProfileRuntime, buildEnvVars, PROFILE_RUNTIME_FILENAME } from './config-injector.js';
 import {
   createCaptureStreams,
   pipeWithLogging,
@@ -16,14 +15,10 @@ import {
 } from './output-capture.js';
 import { collectWorkspaceArtifacts, establishWorkspaceBaseline } from './workspace-artifacts.js';
 import { ExecutionPhaseError } from './errors.js';
+import { buildRunnerImage } from './runner-image.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DOCKER_IMAGE = 'hoodstrut-runner:0.1.0-artifacts';
 const DEFAULT_TIMEOUT = 300;
 const METRICS_FILENAME = 'metrics.json';
-
-// Share one in-flight build across concurrent callers (parallel runs)
-let inFlightBuild: Promise<string> | null = null;
 
 // Names of containers currently running, so we can force-remove them if the
 // host process is interrupted (Ctrl-C during a `benchmark --parallel N` would
@@ -55,59 +50,9 @@ function forceRemoveContainer(name: string): void {
   spawnSync('docker', ['rm', '-f', name], { stdio: 'ignore' });
 }
 
-export async function buildRunnerImage(force: boolean = false): Promise<string> {
-  if (inFlightBuild) {
-    return inFlightBuild;
-  }
-
-  inFlightBuild = doBuildRunnerImage(force);
-  try {
-    return await inFlightBuild;
-  } finally {
-    inFlightBuild = null;
-  }
-}
-
-async function doBuildRunnerImage(force: boolean): Promise<string> {
-  if (!force) {
-    const exists = await imageExists(DOCKER_IMAGE);
-    if (exists) {
-      return DOCKER_IMAGE;
-    }
-  }
-
-  const templatesDir = resolve(__dirname, 'templates');
-  const scriptsDir = resolve(__dirname, 'scripts');
-
-  const { path: buildContext, cleanup } = await tmpDir({ unsafeCleanup: true });
-
-  try {
-    await cp(join(templatesDir, 'Dockerfile.runner'), join(buildContext, 'Dockerfile'));
-    await mkdir(join(buildContext, 'scripts'));
-    await cp(join(scriptsDir, 'run-task.sh'), join(buildContext, 'scripts', 'run-task.sh'));
-    await cp(join(scriptsDir, 'run-sdk.mjs'), join(buildContext, 'scripts', 'run-sdk.mjs'));
-    await cp(join(scriptsDir, 'run-phase.mjs'), join(buildContext, 'scripts', 'run-phase.mjs'));
-
-    await runDockerCommand(['build', '-t', DOCKER_IMAGE, buildContext]);
-
-    return DOCKER_IMAGE;
-  } finally {
-    await cleanup();
-  }
-}
-
-async function imageExists(imageName: string): Promise<boolean> {
-  try {
-    await runDockerCommand(['image', 'inspect', imageName], { silent: true });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export async function runContainer(options: ExecutorOptions): Promise<ExecutionResult> {
   const { profile, task, outputDir, verbose = false, telemetry } = options;
-  const timeout = options.timeout ?? task.timeout ?? DEFAULT_TIMEOUT;
+  const timeout = resolveRunTimeout(options.timeout, task.timeout, profile.settings?.timeout);
   const envVars = buildEnvVars(profile, telemetry);
 
   await mkdir(outputDir, { recursive: true });
@@ -117,18 +62,21 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
   const { path: workspaceDir, cleanup: cleanupWorkspace } = await tmpDir({ unsafeCleanup: true });
   const { path: baselineDir, cleanup: cleanupBaseline } = await tmpDir({ unsafeCleanup: true });
   const { path: containerArtifactsDir, cleanup: cleanupContainerArtifacts } = await tmpDir({ unsafeCleanup: true });
+  const { path: profileConfigDir, cleanup: cleanupProfileConfig } = await tmpDir({ unsafeCleanup: true });
   let streams: Awaited<ReturnType<typeof createCaptureStreams>> | undefined;
   let streamsClosed = false;
 
   try {
-    await prepareRepo({
+    const preparedRepository = await prepareRepo({
       repo: task.repo,
       branch: task.branch,
+      commit: task.commit,
       destDir: workspaceDir,
     });
 
-    await injectConfig(profile, workspaceDir);
-    const image = await buildRunnerImage();
+    await prepareProfileRuntime(profile, profileConfigDir);
+    const runner = await buildRunnerImage();
+    const image = runner.tag;
     const startTime = Date.now();
     const taskPrompt = buildTaskPrompt(task.title, task.body);
     streams = await createCaptureStreams(outputDir, verbose);
@@ -165,7 +113,7 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
       buildDockerArgs({
         phase: 'agent', image, containerName: agentName, workspaceDir,
         artifactDir: containerArtifactsDir,
-        envVars, timeout, workingDir: task.working_dir, taskPrompt,
+        envVars, timeout, workingDir: task.working_dir, taskPrompt, profileConfigDir,
       }),
       agentName,
       streams,
@@ -270,6 +218,18 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
         verifierOutput,
       },
       metrics,
+      provenance: {
+        runner,
+        repository: {
+          source: preparedRepository.source,
+          sourceType: preparedRepository.sourceType,
+          requestedBranch: preparedRepository.requestedBranch,
+          requestedCommit: preparedRepository.requestedCommit,
+          resolvedCommit: preparedRepository.resolvedCommit,
+          immutable: preparedRepository.immutable,
+          contentSha256: preparedRepository.contentSha256,
+        },
+      },
     };
   } finally {
     if (streams && !streamsClosed) {
@@ -278,7 +238,16 @@ export async function runContainer(options: ExecutorOptions): Promise<ExecutionR
     await cleanupWorkspace();
     await cleanupBaseline();
     await cleanupContainerArtifacts();
+    await cleanupProfileConfig();
   }
+}
+
+export function resolveRunTimeout(
+  override?: number,
+  taskTimeout?: number,
+  profileTimeout?: number
+): number {
+  return override ?? taskTimeout ?? profileTimeout ?? DEFAULT_TIMEOUT;
 }
 
 function buildTaskPrompt(title: string, body: string): string {
@@ -297,6 +266,7 @@ interface DockerArgsOptions {
   command?: string;
   workingDir?: string;
   taskPrompt?: string;
+  profileConfigDir?: string;
 }
 
 function buildDockerArgs(options: DockerArgsOptions): string[] {
@@ -310,6 +280,8 @@ function buildDockerArgs(options: DockerArgsOptions): string[] {
 
   if (options.phase === 'agent') {
     args.push('-v', `${options.artifactDir}:/hoodstrut-artifacts`);
+    if (!options.profileConfigDir) throw new Error('Agent phase requires profileConfigDir');
+    args.push('-v', `${options.profileConfigDir}:/root/.claude`);
   }
 
   for (const [key, value] of Object.entries(options.envVars)) {
@@ -330,6 +302,7 @@ function buildDockerArgs(options: DockerArgsOptions): string[] {
 
   if (options.phase === 'agent') {
     args.push('-e', 'METRICS_FILE=/hoodstrut-artifacts/metrics.json');
+    args.push('-e', `PROFILE_CONFIG_FILE=/root/.claude/${PROFILE_RUNTIME_FILENAME}`);
   }
 
   if (options.phase !== 'agent') {

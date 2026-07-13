@@ -1,5 +1,5 @@
 import { stringify as yamlStringify } from 'yaml';
-import type { Profile } from '../core/types.js';
+import { ProfileSchema, type Profile } from '../core/types.js';
 import type { ScanResult } from './index.js';
 
 export interface GeneratedProfile {
@@ -9,14 +9,23 @@ export interface GeneratedProfile {
   warnings: string[];
 }
 
-function mapEffortLevel(effort?: string): 'low' | 'medium' | 'high' {
+export function serializeGeneratedProfile(profile: Profile, sourcePath: string): string {
+  const header = [
+    `# Generated profile: ${profile.name}`,
+    `# Scanned from: ${sourcePath}`,
+    `# Scanned at: ${new Date().toISOString()}`,
+    '',
+  ].join('\n');
+  return header + yamlStringify(profile);
+}
+
+function mapEffortLevel(effort?: string): 'low' | 'medium' | 'high' | 'max' {
   if (!effort) return 'medium';
 
-  // Map xhigh to high since our profile schema only supports low/medium/high
-  if (effort === 'xhigh') return 'high';
+  if (effort === 'xhigh') return 'max';
 
-  if (['low', 'medium', 'high'].includes(effort)) {
-    return effort as 'low' | 'medium' | 'high';
+  if (['low', 'medium', 'high', 'max'].includes(effort)) {
+    return effort as 'low' | 'medium' | 'high' | 'max';
   }
 
   return 'medium';
@@ -55,13 +64,25 @@ export function generateProfile(scanResult: ScanResult, name: string): Generated
   }
 
   // Add MCP servers if found
-  if (scanResult.mcpServers.merged.length > 0) {
-    profile.mcp_servers = scanResult.mcpServers.merged.map(server => ({
+  if (scanResult.mcpServers.servers.length > 0) {
+    profile.mcp_servers = scanResult.mcpServers.servers.map(server => ({
       name: server.name,
-      command: server.command || '',
+      type: server.type,
+      command: server.command,
       args: server.args,
       env: server.env,
+      url: server.url,
+      headers: server.headers,
+      timeout: server.timeout,
     }));
+  }
+
+  const permissions = scanResult.settings.merged.permissions;
+  if (permissions?.allow?.length || permissions?.deny?.length) {
+    profile.settings = {
+      allowed_tools: permissions.allow,
+      disallowed_tools: permissions.deny,
+    };
   }
 
   // Add skills if found
@@ -72,21 +93,18 @@ export function generateProfile(scanResult: ScanResult, name: string): Generated
     }));
   }
 
-  // Generate YAML with header comment
-  const timestamp = new Date().toISOString();
-  const header = [
-    `# Generated profile: ${name}`,
-    `# Scanned from: ${scanResult.sourcePath}`,
-    `# Scanned at: ${timestamp}`,
-    '',
-  ].join('\n');
-
-  const yaml = header + yamlStringify(profile);
+  const validatedProfile = ProfileSchema.parse(profile);
+  const yaml = serializeGeneratedProfile(validatedProfile, scanResult.sourcePath);
 
   return {
     yaml,
-    profile,
+    profile: validatedProfile,
     requiredEnvVars: scanResult.mcpServers.requiredEnvVars,
-    warnings: scanResult.mcpServers.warnings,
+    warnings: [
+      ...scanResult.mcpServers.warnings,
+      ...(scanResult.settings.merged.effortLevel === 'xhigh'
+        ? ['Claude Code effort xhigh was normalized to the SDK effort max']
+        : []),
+    ],
   };
 }

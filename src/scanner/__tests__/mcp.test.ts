@@ -1,147 +1,71 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFile, mkdir, rm } from 'node:fs/promises';
+import { describe, it, expect } from 'vitest';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { dir as tmpDir } from 'tmp-promise';
 import { scanMcpServers } from '../mcp.js';
 
 describe('scanMcpServers', () => {
-  const testDir = join(tmpdir(), 'hoodstrut-test-mcp');
-  const projectDir = join(testDir, 'project');
-
-  beforeEach(async () => {
-    await mkdir(projectDir, { recursive: true });
+  it('returns an empty result for a missing file', async () => {
+    const result = await scanMcpServers('/definitely/missing/.mcp.json');
+    expect(result).toEqual({ servers: [], requiredEnvVars: [], warnings: [] });
   });
 
-  afterEach(async () => {
-    await rm(testDir, { recursive: true, force: true });
-  });
-
-  it('should return empty arrays when no config exists', async () => {
-    const result = await scanMcpServers(projectDir);
-
-    expect(result.global).toEqual([]);
-    expect(result.project).toEqual([]);
-    expect(result.merged).toEqual([]);
-    expect(result.requiredEnvVars).toEqual([]);
-    expect(result.warnings).toEqual([]);
-  });
-
-  it('should parse project .mcp.json', async () => {
-    await writeFile(
-      join(projectDir, '.mcp.json'),
-      JSON.stringify({
-        mcpServers: {
-          github: {
-            type: 'stdio',
-            command: 'npx',
-            args: ['-y', '@anthropic/mcp-server-github'],
-            env: {
-              GITHUB_TOKEN: '${GITHUB_TOKEN}',
-            },
-          },
+  it('preserves stdio and remote MCP fields while redacting secrets', async () => {
+    const tmp = await tmpDir({ unsafeCleanup: true });
+    try {
+      const path = join(tmp.path, '.mcp.json');
+      const secret = 'do-not-persist';
+      await writeFile(path, JSON.stringify({ mcpServers: {
+        local: {
+          command: 'node', args: ['server.js'],
+          env: { API_TOKEN: secret, ALIAS: '${SHARED_TOKEN:-unsafe}' }, timeout: 20,
         },
-      })
-    );
-
-    const result = await scanMcpServers(projectDir);
-
-    expect(result.project).toHaveLength(1);
-    expect(result.project[0].name).toBe('github');
-    expect(result.project[0].command).toBe('npx');
-    expect(result.project[0].args).toEqual(['-y', '@anthropic/mcp-server-github']);
-    expect(result.project[0].env?.GITHUB_TOKEN).toBe('${GITHUB_TOKEN}');
-    expect(result.requiredEnvVars).toContain('GITHUB_TOKEN');
-  });
-
-  it('replaces literal MCP environment values without retaining the secret', async () => {
-    const secret = 'ghp_do-not-persist-this';
-    await writeFile(
-      join(projectDir, '.mcp.json'),
-      JSON.stringify({
-        mcpServers: {
-          github: {
-            command: 'npx',
-            env: {
-              GITHUB_TOKEN: secret,
-              API_TOKEN: '${API_TOKEN:-unsafe-default}',
-            },
-          },
+        remote: {
+          type: 'http', url: 'https://example.test/mcp',
+          headers: { Authorization: `Bearer ${secret}`, Existing: 'Bearer ${EXISTING_TOKEN}' },
         },
-      })
-    );
-
-    const result = await scanMcpServers(projectDir);
-    const serialized = JSON.stringify(result);
-
-    expect(result.project[0].env).toEqual({
-      GITHUB_TOKEN: '${GITHUB_TOKEN}',
-      API_TOKEN: '${API_TOKEN}',
-    });
-    expect(result.requiredEnvVars).toEqual(['API_TOKEN', 'GITHUB_TOKEN']);
-    expect(serialized).not.toContain(secret);
-    expect(serialized).not.toContain('unsafe-default');
-  });
-
-  it('omits invalid environment names without exposing their values', async () => {
-    const secret = 'do-not-log-this';
-    await writeFile(
-      join(projectDir, '.mcp.json'),
-      JSON.stringify({
-        mcpServers: {
-          unsafe: {
-            command: 'node',
-            env: { 'INVALID-NAME': secret },
-          },
+        signed: {
+          type: 'http', url: 'https://example.test/mcp?token=url-secret',
         },
-      })
-    );
+      } }));
 
-    const result = await scanMcpServers(projectDir);
-
-    expect(result.project[0].env).toEqual({});
-    expect(result.warnings[0]).toContain('INVALID-NAME');
-    expect(result.warnings[0]).not.toContain(secret);
-  });
-
-  it('should parse HTTP MCP servers', async () => {
-    await writeFile(
-      join(projectDir, '.mcp.json'),
-      JSON.stringify({
-        mcpServers: {
-          api: {
-            type: 'http',
-            url: 'https://api.example.com/mcp',
-            headers: {
-              Authorization: 'Bearer ${API_TOKEN}',
-            },
-          },
+      const result = await scanMcpServers(path);
+      expect(result.servers[0]).toEqual({
+        name: 'local', type: 'stdio', command: 'node', args: ['server.js'],
+        env: { API_TOKEN: '${API_TOKEN}', ALIAS: '${SHARED_TOKEN}' }, timeout: 20,
+      });
+      expect(result.servers[1]).toMatchObject({
+        name: 'remote', type: 'http', url: 'https://example.test/mcp',
+        headers: {
+          Authorization: 'Bearer ${MCP_REMOTE_AUTHORIZATION}',
+          Existing: 'Bearer ${EXISTING_TOKEN}',
         },
-      })
-    );
-
-    const result = await scanMcpServers(projectDir);
-
-    expect(result.project[0].name).toBe('api');
-    expect(result.project[0].type).toBe('http');
-    expect(result.project[0].url).toBe('https://api.example.com/mcp');
-    expect(result.project[0].headers?.Authorization).toBe('Bearer ${API_TOKEN}');
+      });
+      expect(result.requiredEnvVars).toEqual([
+        'API_TOKEN', 'EXISTING_TOKEN', 'MCP_REMOTE_AUTHORIZATION', 'MCP_SIGNED_URL', 'SHARED_TOKEN',
+      ]);
+      expect(result.servers[2].url).toBe('${MCP_SIGNED_URL}');
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(JSON.stringify(result)).not.toContain('url-secret');
+      expect(JSON.stringify(result)).not.toContain('unsafe');
+    } finally {
+      await tmp.cleanup();
+    }
   });
 
-  it('should merge servers with project overriding global', async () => {
-    const result = await scanMcpServers(projectDir);
-
-    // Without global config, merged should equal project
-    expect(result.merged).toEqual(result.project);
-  });
-
-  it('should handle missing mcpServers key', async () => {
-    await writeFile(
-      join(projectDir, '.mcp.json'),
-      JSON.stringify({ someOtherKey: {} })
-    );
-
-    const result = await scanMcpServers(projectDir);
-
-    expect(result.project).toEqual([]);
+  it('omits invalid environment names without exposing values', async () => {
+    const tmp = await tmpDir({ unsafeCleanup: true });
+    try {
+      const path = join(tmp.path, '.mcp.json');
+      await writeFile(path, JSON.stringify({
+        mcpServers: { bad: { command: 'node', env: { 'BAD-NAME': 'secret' } } },
+      }));
+      const result = await scanMcpServers(path);
+      expect(result.servers[0].env).toEqual({});
+      expect(result.warnings[0]).toContain('BAD-NAME');
+      expect(JSON.stringify(result)).not.toContain('secret');
+    } finally {
+      await tmp.cleanup();
+    }
   });
 });

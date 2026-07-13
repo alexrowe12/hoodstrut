@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@anthropic-ai/sdk', () => ({
-  default: vi.fn().mockImplementation(() => ({ messages: { create: vi.fn() } })),
+  default: vi.fn().mockImplementation(function () {
+    return { messages: { create: vi.fn() } };
+  }),
 }));
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -36,7 +38,9 @@ const baseInput = {
 
 function mockResponse(text: string) {
   const create = vi.fn().mockResolvedValue({ content: [{ type: 'text', text }] });
-  MockedAnthropic.mockImplementation(() => ({ messages: { create } }) as unknown as Anthropic);
+  MockedAnthropic.mockImplementation(function () {
+    return { messages: { create } } as unknown as Anthropic;
+  });
   return create;
 }
 
@@ -72,7 +76,9 @@ describe('AI judge', () => {
 
   it('classifies API failures', async () => {
     const create = vi.fn().mockRejectedValue(new Error('service unavailable'));
-    MockedAnthropic.mockImplementation(() => ({ messages: { create } }) as unknown as Anthropic);
+    MockedAnthropic.mockImplementation(function () {
+      return { messages: { create } } as unknown as Anthropic;
+    });
     await expect(evaluateWithJudge(baseInput)).rejects.toMatchObject({
       code: 'judge_request_failed',
     });

@@ -1,69 +1,60 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFile, mkdir, rm } from 'node:fs/promises';
+import { describe, it, expect } from 'vitest';
+import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { dir as tmpDir } from 'tmp-promise';
 import { scanSettings } from '../settings.js';
 
 describe('scanSettings', () => {
-  const testDir = join(tmpdir(), 'hoodstrut-test-settings');
-  const projectDir = join(testDir, 'project');
+  it('reads only the supplied settings files and applies local precedence', async () => {
+    const tmp = await tmpDir({ unsafeCleanup: true });
+    try {
+      const base = join(tmp.path, 'settings.json');
+      const local = join(tmp.path, 'settings.local.json');
+      await writeFile(base, JSON.stringify({
+        model: 'sonnet', effortLevel: 'low', permissions: { allow: ['Read'], deny: ['WebFetch'] },
+      }));
+      await writeFile(local, JSON.stringify({
+        model: 'opus', effortLevel: 'high', permissions: { allow: ['Bash'], deny: ['WebSearch'] },
+      }));
 
-  beforeEach(async () => {
-    await mkdir(join(projectDir, '.claude'), { recursive: true });
-  });
-
-  afterEach(async () => {
-    await rm(testDir, { recursive: true, force: true });
-  });
-
-  it('should return empty project settings when no project config exists', async () => {
-    const result = await scanSettings(projectDir);
-
-    // Global settings come from real ~/.claude/settings.json (may have values)
-    // Project settings should be empty since we created an empty project dir
-    expect(result.project).toEqual({});
-  });
-
-  it('should parse project settings.local.json', async () => {
-    await writeFile(
-      join(projectDir, '.claude', 'settings.local.json'),
-      JSON.stringify({
+      const result = await scanSettings({ base, local });
+      expect(result.base.model).toBe('sonnet');
+      expect(result.local.model).toBe('opus');
+      expect(result.merged).toMatchObject({
         model: 'opus',
         effortLevel: 'high',
-        permissions: {
-          allow: ['Bash(npm:*)'],
-        },
-      })
-    );
-
-    const result = await scanSettings(projectDir);
-
-    expect(result.project.model).toBe('opus');
-    expect(result.project.effortLevel).toBe('high');
-    expect(result.project.permissions?.allow).toContain('Bash(npm:*)');
+        permissions: { allow: ['Read', 'Bash'], deny: ['WebFetch', 'WebSearch'] },
+      });
+    } finally {
+      await tmp.cleanup();
+    }
   });
 
-  it('should ignore invalid effort levels', async () => {
-    await writeFile(
-      join(projectDir, '.claude', 'settings.local.json'),
-      JSON.stringify({
-        effortLevel: 'invalid',
-      })
-    );
-
-    const result = await scanSettings(projectDir);
-
-    expect(result.project.effortLevel).toBeUndefined();
+  it('returns empty settings for missing or malformed files', async () => {
+    const tmp = await tmpDir({ unsafeCleanup: true });
+    try {
+      const malformed = join(tmp.path, 'settings.json');
+      await writeFile(malformed, 'not json');
+      expect(await scanSettings({ base: malformed })).toEqual({ base: {}, local: {}, merged: {} });
+      expect(await scanSettings({ base: join(tmp.path, 'missing.json') })).toEqual({
+        base: {}, local: {}, merged: {},
+      });
+    } finally {
+      await tmp.cleanup();
+    }
   });
 
-  it('should handle malformed JSON gracefully', async () => {
-    await writeFile(
-      join(projectDir, '.claude', 'settings.local.json'),
-      'not valid json'
-    );
-
-    const result = await scanSettings(projectDir);
-
-    expect(result.project).toEqual({});
+  it('ignores invalid effort values and accepts max and xhigh', async () => {
+    const tmp = await tmpDir({ unsafeCleanup: true });
+    try {
+      await mkdir(tmp.path, { recursive: true });
+      const path = join(tmp.path, 'settings.json');
+      await writeFile(path, JSON.stringify({ effortLevel: 'invalid' }));
+      expect((await scanSettings({ base: path })).merged.effortLevel).toBeUndefined();
+      await writeFile(path, JSON.stringify({ effortLevel: 'max' }));
+      expect((await scanSettings({ base: path })).merged.effortLevel).toBe('max');
+    } finally {
+      await tmp.cleanup();
+    }
   });
 });

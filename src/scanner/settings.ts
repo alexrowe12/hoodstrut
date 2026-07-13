@@ -1,11 +1,8 @@
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
 
 export interface ClaudeSettings {
   model?: string;
-  effortLevel?: 'low' | 'medium' | 'high' | 'xhigh';
-  theme?: string;
+  effortLevel?: 'low' | 'medium' | 'high' | 'max' | 'xhigh';
   permissions?: {
     allow?: string[];
     deny?: string[];
@@ -13,15 +10,19 @@ export interface ClaudeSettings {
 }
 
 export interface ScannedSettings {
-  global: ClaudeSettings;
-  project: ClaudeSettings;
+  base: ClaudeSettings;
+  local: ClaudeSettings;
   merged: ClaudeSettings;
+}
+
+export interface SettingsPaths {
+  base: string;
+  local?: string;
 }
 
 async function readJsonFile(path: string): Promise<Record<string, unknown> | null> {
   try {
-    const content = await readFile(path, 'utf-8');
-    return JSON.parse(content);
+    return JSON.parse(await readFile(path, 'utf-8'));
   } catch {
     return null;
   }
@@ -29,76 +30,53 @@ async function readJsonFile(path: string): Promise<Record<string, unknown> | nul
 
 function extractSettings(data: Record<string, unknown> | null): ClaudeSettings {
   if (!data) return {};
-
   const settings: ClaudeSettings = {};
 
-  if (typeof data.model === 'string') {
-    settings.model = data.model;
-  }
-
-  if (typeof data.effortLevel === 'string') {
-    const validEfforts = ['low', 'medium', 'high', 'xhigh'];
-    if (validEfforts.includes(data.effortLevel)) {
-      settings.effortLevel = data.effortLevel as ClaudeSettings['effortLevel'];
-    }
-  }
-
-  if (typeof data.theme === 'string') {
-    settings.theme = data.theme;
+  if (typeof data.model === 'string') settings.model = data.model;
+  if (
+    typeof data.effortLevel === 'string'
+    && ['low', 'medium', 'high', 'max', 'xhigh'].includes(data.effortLevel)
+  ) {
+    settings.effortLevel = data.effortLevel as ClaudeSettings['effortLevel'];
   }
 
   if (data.permissions && typeof data.permissions === 'object') {
-    const perms = data.permissions as Record<string, unknown>;
+    const permissions = data.permissions as Record<string, unknown>;
     settings.permissions = {};
-    if (Array.isArray(perms.allow)) {
-      settings.permissions.allow = perms.allow.filter((x): x is string => typeof x === 'string');
+    if (Array.isArray(permissions.allow)) {
+      settings.permissions.allow = permissions.allow.filter(
+        (value): value is string => typeof value === 'string'
+      );
     }
-    if (Array.isArray(perms.deny)) {
-      settings.permissions.deny = perms.deny.filter((x): x is string => typeof x === 'string');
+    if (Array.isArray(permissions.deny)) {
+      settings.permissions.deny = permissions.deny.filter(
+        (value): value is string => typeof value === 'string'
+      );
     }
   }
 
   return settings;
 }
 
-function mergeSettings(global: ClaudeSettings, project: ClaudeSettings): ClaudeSettings {
-  const merged: ClaudeSettings = { ...global };
-
-  if (project.model) merged.model = project.model;
-  if (project.effortLevel) merged.effortLevel = project.effortLevel;
-  if (project.theme) merged.theme = project.theme;
-
-  if (project.permissions) {
-    merged.permissions = {
-      allow: [
-        ...(global.permissions?.allow || []),
-        ...(project.permissions.allow || []),
-      ],
-      deny: [
-        ...(global.permissions?.deny || []),
-        ...(project.permissions.deny || []),
-      ],
-    };
-  }
-
-  return merged;
+function mergeSettings(base: ClaudeSettings, local: ClaudeSettings): ClaudeSettings {
+  return {
+    ...base,
+    ...local,
+    permissions: base.permissions || local.permissions
+      ? {
+          allow: [...(base.permissions?.allow ?? []), ...(local.permissions?.allow ?? [])],
+          deny: [...(base.permissions?.deny ?? []), ...(local.permissions?.deny ?? [])],
+        }
+      : undefined,
+  };
 }
 
-export async function scanSettings(projectPath?: string): Promise<ScannedSettings> {
-  const globalSettingsPath = join(homedir(), '.claude', 'settings.json');
-  const globalData = await readJsonFile(globalSettingsPath);
-  const global = extractSettings(globalData);
-
-  let project: ClaudeSettings = {};
-  if (projectPath) {
-    const projectSettingsPath = join(projectPath, '.claude', 'settings.local.json');
-    const projectData = await readJsonFile(projectSettingsPath);
-    project = extractSettings(projectData);
-  }
-
-  return {
-    global,
-    project,
-    merged: mergeSettings(global, project),
-  };
+export async function scanSettings(paths: SettingsPaths): Promise<ScannedSettings> {
+  const [baseData, localData] = await Promise.all([
+    readJsonFile(paths.base),
+    paths.local ? readJsonFile(paths.local) : Promise.resolve(null),
+  ]);
+  const base = extractSettings(baseData);
+  const local = extractSettings(localData);
+  return { base, local, merged: mergeSettings(base, local) };
 }

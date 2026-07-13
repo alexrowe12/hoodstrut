@@ -77,6 +77,39 @@ function mockExecutionResult(overrides: {
         model_usage: {},
       },
     },
+    provenance: {
+      runner: {
+        tag: 'hoodstrut-runner:0.1.0-abcdef1234567890',
+        hoodstrutVersion: '0.1.0',
+        buildInputsSha256: 'a'.repeat(64),
+        imageId: `sha256:${'b'.repeat(64)}`,
+        repoDigests: [],
+        platform: { os: 'linux', architecture: 'arm64' },
+        versions: {
+          node: '20.20.2',
+          npm: '10.8.2',
+          git: '2.39.5',
+          python: '3.11.2',
+          claudeCode: '2.1.197',
+          agentSdk: '0.3.207',
+          os: 'linux',
+          architecture: 'arm64',
+        },
+        docker: {
+          serverVersion: '28.0.0',
+          apiVersion: '1.48',
+          os: 'linux',
+          architecture: 'arm64',
+        },
+      },
+      repository: {
+        source: './repos/test-app',
+        sourceType: 'local_snapshot' as const,
+        requestedBranch: 'main',
+        immutable: false,
+        contentSha256: 'c'.repeat(64),
+      },
+    },
   };
 }
 
@@ -111,7 +144,7 @@ describe('executeRun', () => {
     await rm(outputRoot, { recursive: true, force: true });
   });
 
-  it('writes a schema-valid run-result.json with score', async () => {
+  it('writes a schema-valid run-result.json for benchmark-level analysis', async () => {
     vi.mocked(runContainer).mockResolvedValue(mockExecutionResult());
 
     const outputDir = join(outputRoot, 'run-1');
@@ -127,8 +160,11 @@ describe('executeRun', () => {
     expect(runResult.profile.name).toBe('test-profile');
     expect(runResult.task.id).toBe('test-task');
     expect(runResult.metrics?.cost_usd).toBe(0.05);
-    expect(runResult.score).not.toBeNull();
+    expect(runResult.score).toBeNull();
+    expect(runResult.repetition).toBe(1);
     expect(runResult.artifacts?.changes_patch).toBe(join(outputRoot, 'changes.patch'));
+    expect(runResult.provenance?.runtime.agent_sdk).toBe('0.3.207');
+    expect(runResult.provenance?.repository.content_sha256).toBe('c'.repeat(64));
 
     const written = JSON.parse(await readFile(join(outputDir, 'run-result.json'), 'utf-8'));
     const parsed = RunResultSchema.safeParse(written);
@@ -152,7 +188,7 @@ describe('executeRun', () => {
     expect(runResult.result.status).toBe('failed');
   });
 
-  it('classifies agent timeouts as failed, scoreable runs', async () => {
+  it('classifies agent timeouts as valid unsuccessful outcomes without additive points', async () => {
     const timedOut = mockExecutionResult({ agentExitCode: 137, agentTimedOut: true });
     timedOut.verifier = undefined;
     timedOut.verifierExitCode = undefined;
@@ -166,7 +202,7 @@ describe('executeRun', () => {
     });
 
     expect(runResult.result.status).toBe('timed_out');
-    expect(runResult.score).not.toBeNull();
+    expect(runResult.score).toBeNull();
   });
 
   it('does not score verifier infrastructure errors', async () => {

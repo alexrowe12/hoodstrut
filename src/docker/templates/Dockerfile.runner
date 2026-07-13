@@ -1,15 +1,22 @@
-FROM node:20-slim
+FROM node:20.20.2-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
 
-# Install Claude Code CLI and Agent SDK
-RUN npm install -g @anthropic-ai/claude-code @anthropic-ai/claude-agent-sdk
+ARG HOODSTRUT_VERSION
+ARG RUNNER_BUILD_SHA256
 
-# Node's ESM loader ignores NODE_PATH and the global install dir; it only walks
-# up node_modules from the importing file. Symlink the global modules to
-# /node_modules so run-sdk.mjs (at /) can resolve the SDK via a bare import.
-RUN ln -s /usr/local/lib/node_modules /node_modules
-
-# Install common dev tools
-RUN apt-get update && apt-get install -y \
+# Freeze apt resolution to a dated, immutable Debian snapshot.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates=20230311+deb12u1 \
+      libssl3=3.0.20-1~deb12u2 \
+      openssl=3.0.20-1~deb12u2 && \
+    rm -rf /var/lib/apt/lists/* && \
+    printf '%s\n' \
+      'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260701T000000Z bookworm main' \
+      'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20260701T000000Z bookworm-security main' \
+      'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260701T000000Z bookworm-updates main' \
+      > /etc/apt/sources.list && \
+    rm -f /etc/apt/sources.list.d/debian.sources && \
+    apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --no-install-recommends \
     git \
     python3 \
     make \
@@ -17,6 +24,13 @@ RUN apt-get update && apt-get install -y \
     g++ \
     jq \
     && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/hoodstrut
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+ENV PATH="/opt/hoodstrut/node_modules/.bin:${PATH}"
+# The root-level ESM runner resolves bare packages by walking through /node_modules.
+RUN ln -s /opt/hoodstrut/node_modules /node_modules
 
 # Configure git for any operations that might need it
 RUN git config --global user.email "hoodstrut@localhost" && \
@@ -28,13 +42,15 @@ RUN git config --global user.email "hoodstrut@localhost" && \
 # which the SDK surfaces as apiKeySource: "none" / "Not logged in".
 ENV IS_SANDBOX=1
 
-WORKDIR /workspace
-
-# Copy entrypoint scripts (both old shell and new SDK-based)
+COPY scripts/runtime-info.mjs /runtime-info.mjs
 COPY scripts/run-task.sh /run-task.sh
 COPY scripts/run-sdk.mjs /run-sdk.mjs
 COPY scripts/run-phase.mjs /run-phase.mjs
 RUN chmod +x /run-task.sh
 
-# Default to SDK-based entrypoint
+LABEL org.opencontainers.image.title="hoodstrut-runner" \
+      org.opencontainers.image.version="${HOODSTRUT_VERSION}" \
+      org.hoodstrut.runner.build-inputs="${RUNNER_BUILD_SHA256}"
+
+WORKDIR /workspace
 ENTRYPOINT ["node", "/run-sdk.mjs"]

@@ -1,9 +1,11 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { writeFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
 import { listProfiles, loadProfile, validateProfile } from '../../core/profile.js';
-import { scanClaudeConfig, generateProfileFromScan } from '../../scanner/index.js';
+import {
+  scanClaudeConfig,
+  generateProfileFromScan,
+  writeGeneratedProfile,
+} from '../../scanner/index.js';
 
 export const profileCommand = new Command('profile')
   .description('Manage profiles');
@@ -57,6 +59,18 @@ profileCommand
         console.log(`\nSystem Prompt:\n${profile.system_prompt}`);
       }
 
+      if (profile.settings) {
+        console.log(`\nRuntime Settings:`);
+        if (profile.settings.timeout) console.log(`  Timeout: ${profile.settings.timeout}s`);
+        if (profile.settings.max_turns) console.log(`  Max turns: ${profile.settings.max_turns}`);
+        if (profile.settings.allowed_tools?.length) {
+          console.log(`  Allowed tools: ${profile.settings.allowed_tools.join(', ')}`);
+        }
+        if (profile.settings.disallowed_tools?.length) {
+          console.log(`  Disallowed tools: ${profile.settings.disallowed_tools.join(', ')}`);
+        }
+      }
+
       if (profile.mcp_servers && profile.mcp_servers.length > 0) {
         console.log(`\nMCP Servers:`);
         for (const server of profile.mcp_servers) {
@@ -99,9 +113,9 @@ profileCommand
   .command('scan')
   .description('Scan and import existing Claude Code configuration')
   .option('-n, --name <name>', 'Name for the generated profile')
-  .option('-p, --path <path>', 'Path to Claude config directory')
+  .option('-p, --path <path>', 'Exact user config directory or project root')
   .option('-o, --output <directory>', 'Output directory for generated profile', './profiles')
-  .option('--project', 'Scan project-local config (.claude/ in current directory)')
+  .option('--project', 'Scan only project configuration (cwd unless --path is set)')
   .option('--dry-run', 'Show what would be extracted without writing')
   .option('--validate', 'Validate the generated profile after creation')
   .action(async (options) => {
@@ -127,10 +141,16 @@ profileCommand
         if (!scanResult.settings.merged.model && !scanResult.settings.merged.effortLevel) {
           console.log('  (none found)');
         }
+        if (scanResult.settings.merged.permissions?.allow?.length) {
+          console.log(`  Allowed tools: ${scanResult.settings.merged.permissions.allow.join(', ')}`);
+        }
+        if (scanResult.settings.merged.permissions?.deny?.length) {
+          console.log(`  Disallowed tools: ${scanResult.settings.merged.permissions.deny.join(', ')}`);
+        }
 
         console.log(chalk.bold('\nMCP Servers:'));
-        if (scanResult.mcpServers.merged.length > 0) {
-          for (const server of scanResult.mcpServers.merged) {
+        if (scanResult.mcpServers.servers.length > 0) {
+          for (const server of scanResult.mcpServers.servers) {
             console.log(`  - ${server.name}: ${server.command || server.url || '(no command)'}`);
           }
         } else {
@@ -175,19 +195,18 @@ profileCommand
         return;
       }
 
-      const { yaml, profile, requiredEnvVars, warnings } = await generateProfileFromScan({
+      const generated = await generateProfileFromScan({
         path: options.path,
         project: options.project,
         name: options.name,
       });
 
-      await mkdir(options.output, { recursive: true });
-      const outputPath = join(options.output, `${profile.name}.yaml`);
-      await writeFile(outputPath, yaml, 'utf-8');
+      const outputPath = await writeGeneratedProfile(generated, options.output);
 
       console.log(chalk.green(`Profile created: ${outputPath}\n`));
 
       console.log(chalk.bold('Profile Summary:'));
+      const { profile, requiredEnvVars, warnings } = generated;
       console.log(`  Name: ${profile.name}`);
       console.log(`  Model: ${profile.model}`);
       console.log(`  Effort: ${profile.effort}`);
@@ -199,6 +218,12 @@ profileCommand
       }
       if (profile.system_prompt) {
         console.log(`  System Prompt: ${profile.system_prompt.length} characters`);
+      }
+      if (profile.settings?.allowed_tools?.length) {
+        console.log(`  Allowed Tools: ${profile.settings.allowed_tools.join(', ')}`);
+      }
+      if (profile.settings?.disallowed_tools?.length) {
+        console.log(`  Disallowed Tools: ${profile.settings.disallowed_tools.join(', ')}`);
       }
       if (requiredEnvVars.length > 0) {
         console.log(`  Required environment: ${requiredEnvVars.join(', ')}`);

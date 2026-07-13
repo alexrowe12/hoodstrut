@@ -1,260 +1,164 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { dir as tmpDir } from 'tmp-promise';
-import { injectConfig, buildEnvVars } from '../config-injector.js';
+import {
+  buildEnvVars,
+  buildProfileRuntime,
+  prepareProfileRuntime,
+} from '../config-injector.js';
+import { resolveRunTimeout } from '../executor.js';
 import type { Profile } from '../../core/types.js';
 
-describe('config-injector', () => {
-  let workspaceDir: string;
-  let cleanup: () => Promise<void>;
+const minimalProfile: Profile = {
+  name: 'test', model: 'claude-sonnet-5', effort: 'medium',
+};
 
-  beforeEach(async () => {
-    const tmp = await tmpDir({ unsafeCleanup: true });
-    workspaceDir = tmp.path;
-    cleanup = tmp.cleanup;
+describe('profile runtime preparation', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv, ANTHROPIC_API_KEY: 'test-key' };
   });
 
-  afterEach(async () => {
-    await cleanup();
+  afterEach(() => {
+    process.env = originalEnv;
   });
 
-  describe('injectConfig', () => {
-    it('writes CLAUDE.md from system_prompt', async () => {
-      const profile: Profile = {
-        name: 'test',
-        model: 'claude-sonnet-4-20250514',
-        system_prompt: '# Custom Instructions\n\nBe helpful.',
-      };
-
-      await injectConfig(profile, workspaceDir);
-
-      const content = await readFile(join(workspaceDir, 'CLAUDE.md'), 'utf-8');
-      expect(content).toBe('# Custom Instructions\n\nBe helpful.');
+  it('maps every programmatic SDK control', () => {
+    const runtime = buildProfileRuntime({
+      ...minimalProfile,
+      model: 'claude-opus-4-8',
+      effort: 'max',
+      system_prompt: 'Be exact.',
+      settings: {
+        max_turns: 42,
+        timeout: 90,
+        allowed_tools: ['Read', 'Bash'],
+        disallowed_tools: ['WebFetch'],
+      },
+      mcp_servers: [{
+        name: 'remote', type: 'http', url: 'https://example.test/mcp',
+        headers: { Authorization: 'Bearer ${TOKEN}' }, timeout: 10,
+      }],
     });
-
-    it('writes settings.local.json with model and effort', async () => {
-      const profile: Profile = {
-        name: 'test',
-        model: 'claude-opus-4-20250514',
-        effort: 'high',
-      };
-
-      await injectConfig(profile, workspaceDir);
-
-      const content = await readFile(
-        join(workspaceDir, '.claude', 'settings.local.json'),
-        'utf-8'
-      );
-      const settings = JSON.parse(content);
-      expect(settings.model).toBe('claude-opus-4-20250514');
-      expect(settings.effortLevel).toBe('high');
-    });
-
-    it('writes .mcp.json with MCP servers', async () => {
-      const profile: Profile = {
-        name: 'test',
-        model: 'claude-sonnet-4-20250514',
-        mcp_servers: [
-          {
-            name: 'filesystem',
-            command: 'npx',
-            args: ['-y', '@anthropic/mcp-server-filesystem'],
-          },
-          {
-            name: 'github',
-            command: 'npx',
-            args: ['-y', '@anthropic/mcp-server-github'],
-            env: { GITHUB_TOKEN: '${GITHUB_TOKEN}' },
-          },
-        ],
-      };
-
-      await injectConfig(profile, workspaceDir);
-
-      const content = await readFile(join(workspaceDir, '.mcp.json'), 'utf-8');
-      const mcp = JSON.parse(content);
-      expect(mcp.mcpServers.filesystem).toEqual({
-        command: 'npx',
-        args: ['-y', '@anthropic/mcp-server-filesystem'],
-        env: {},
-      });
-      expect(mcp.mcpServers.github.env).toEqual({ GITHUB_TOKEN: '${GITHUB_TOKEN}' });
-    });
-
-    it('does not write files when profile has no optional fields', async () => {
-      const profile: Profile = {
-        name: 'minimal',
-        model: 'claude-sonnet-4-20250514',
-      };
-
-      await injectConfig(profile, workspaceDir);
-
-      await expect(
-        readFile(join(workspaceDir, 'CLAUDE.md'), 'utf-8')
-      ).rejects.toThrow();
-
-      await expect(
-        readFile(join(workspaceDir, '.mcp.json'), 'utf-8')
-      ).rejects.toThrow();
-
-      const settings = await readFile(
-        join(workspaceDir, '.claude', 'settings.local.json'),
-        'utf-8'
-      );
-      expect(JSON.parse(settings)).toEqual({ model: 'claude-sonnet-4-20250514' });
+    expect(runtime).toEqual({
+      model: 'claude-opus-4-8', effort: 'max', systemPrompt: 'Be exact.', maxTurns: 42,
+      allowedTools: ['Read', 'Bash'], disallowedTools: ['WebFetch'],
+      mcpServers: { remote: {
+        type: 'http', url: 'https://example.test/mcp',
+        headers: { Authorization: 'Bearer ${TOKEN}' }, timeout: 10,
+      } },
     });
   });
 
-  describe('buildEnvVars', () => {
-    const originalEnv = process.env;
+  it('copies complete skill directories and writes runtime JSON', async () => {
+    const source = await tmpDir({ unsafeCleanup: true });
+    const target = await tmpDir({ unsafeCleanup: true });
+    try {
+      const skillDir = join(source.path, 'deploy');
+      await mkdir(skillDir);
+      await writeFile(join(skillDir, 'SKILL.md'), '---\nname: deploy\n---');
+      await writeFile(join(skillDir, 'helper.sh'), 'echo deploy');
+      const runtimePath = await prepareProfileRuntime({
+        ...minimalProfile, skills: [{ name: 'deploy', source: skillDir }],
+      }, target.path);
+      expect(JSON.parse(await readFile(runtimePath, 'utf-8')).model).toBe('claude-sonnet-5');
+      expect(await readFile(join(target.path, 'skills', 'deploy', 'helper.sh'), 'utf-8'))
+        .toBe('echo deploy');
+    } finally {
+      await source.cleanup();
+      await target.cleanup();
+    }
+  });
 
-    beforeEach(() => {
-      process.env = { ...originalEnv, ANTHROPIC_API_KEY: 'test-key' };
+  it('normalizes a legacy direct skill file to SKILL.md', async () => {
+    const source = await tmpDir({ unsafeCleanup: true });
+    const target = await tmpDir({ unsafeCleanup: true });
+    try {
+      const legacyFile = join(source.path, 'legacy-skill.md');
+      await writeFile(legacyFile, 'legacy skill');
+      await prepareProfileRuntime({
+        ...minimalProfile, skills: [{ name: 'legacy', source: legacyFile }],
+      }, target.path);
+      expect(await readFile(join(target.path, 'skills', 'legacy', 'SKILL.md'), 'utf-8'))
+        .toBe('legacy skill');
+    } finally {
+      await source.cleanup();
+      await target.cleanup();
+    }
+  });
+
+  it('fails for missing and duplicate skill sources', async () => {
+    const target = await tmpDir({ unsafeCleanup: true });
+    try {
+      await expect(prepareProfileRuntime({
+        ...minimalProfile, skills: [{ name: 'missing', source: '/missing/skill' }],
+      }, target.path)).rejects.toThrow('Skill source does not exist');
+      const source = await tmpDir({ unsafeCleanup: true });
+      try {
+        await writeFile(join(source.path, 'SKILL.md'), 'skill');
+        await expect(prepareProfileRuntime({
+          ...minimalProfile,
+          skills: [
+            { name: 'same', source: source.path },
+            { name: 'same', source: source.path },
+          ],
+        }, target.path)).rejects.toThrow('Duplicate skill name');
+      } finally {
+        await source.cleanup();
+      }
+    } finally {
+      await target.cleanup();
+    }
+  });
+
+  it('resolves environment references for MCP env, URLs, and headers', () => {
+    process.env.TOKEN = 'runtime-token';
+    process.env.HOST = 'mcp.example.test';
+    const env = buildEnvVars({
+      ...minimalProfile,
+      mcp_servers: [{
+        name: 'remote', type: 'http', url: 'https://${HOST}/mcp',
+        headers: { Authorization: 'Bearer ${TOKEN}' },
+      }],
     });
+    expect(env).toMatchObject({ TOKEN: 'runtime-token', HOST: 'mcp.example.test' });
+    expect(env.ANTHROPIC_MODEL).toBeUndefined();
+  });
 
-    afterEach(() => {
-      process.env = originalEnv;
+  it('fails clearly for an unresolved MCP reference and accepts defaults', () => {
+    delete process.env.MISSING_TOKEN;
+    expect(() => buildEnvVars({
+      ...minimalProfile,
+      mcp_servers: [{
+        name: 'remote', type: 'http', url: 'https://example.test',
+        headers: { Authorization: 'Bearer ${MISSING_TOKEN}' },
+      }],
+    })).toThrow('requires MISSING_TOKEN for MCP server "remote"');
+    expect(() => buildEnvVars({
+      ...minimalProfile,
+      mcp_servers: [{
+        name: 'remote', type: 'http', url: 'https://${MISSING_TOKEN:-example.test}',
+      }],
+    })).not.toThrow();
+  });
+
+  it('includes telemetry and explicit profile environment variables', () => {
+    const env = buildEnvVars({
+      ...minimalProfile, settings: { env: { NODE_ENV: 'test' } },
+    }, { endpoint: 'http://localhost:4318', headers: 'Authorization=token' });
+    expect(env).toMatchObject({
+      ANTHROPIC_API_KEY: 'test-key', NODE_ENV: 'test',
+      OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4318',
+      OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=token',
     });
+  });
 
-    it('includes ANTHROPIC_API_KEY from environment', () => {
-      const profile: Profile = {
-        name: 'test',
-        model: 'claude-sonnet-4-20250514',
-      };
-
-      const env = buildEnvVars(profile);
-      expect(env.ANTHROPIC_API_KEY).toBe('test-key');
-    });
-
-    it('includes model as ANTHROPIC_MODEL', () => {
-      const profile: Profile = {
-        name: 'test',
-        model: 'claude-opus-4-20250514',
-      };
-
-      const env = buildEnvVars(profile);
-      expect(env.ANTHROPIC_MODEL).toBe('claude-opus-4-20250514');
-    });
-
-    it('sets OTEL env vars when telemetry is configured', () => {
-      const profile: Profile = {
-        name: 'test',
-        model: 'claude-sonnet-4-20250514',
-      };
-
-      const telemetry = { endpoint: 'http://localhost:4318' };
-      const env = buildEnvVars(profile, telemetry);
-      expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe('http://localhost:4318');
-      expect(env.OTEL_TRACES_EXPORTER).toBe('otlp');
-      expect(env.OTEL_METRICS_EXPORTER).toBe('otlp');
-      expect(env.CLAUDE_CODE_ENABLE_TELEMETRY).toBe('1');
-    });
-
-    it('does not set OTEL env vars when telemetry is not configured', () => {
-      const profile: Profile = {
-        name: 'test',
-        model: 'claude-sonnet-4-20250514',
-      };
-
-      const env = buildEnvVars(profile);
-      expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined();
-      expect(env.OTEL_TRACES_EXPORTER).toBeUndefined();
-      expect(env.CLAUDE_CODE_ENABLE_TELEMETRY).toBeUndefined();
-    });
-
-    it('includes telemetry headers when provided', () => {
-      const profile: Profile = {
-        name: 'test',
-        model: 'claude-sonnet-4-20250514',
-      };
-
-      const telemetry = {
-        endpoint: 'http://localhost:4318',
-        headers: 'Authorization=Bearer token',
-      };
-      const env = buildEnvVars(profile, telemetry);
-      expect(env.OTEL_EXPORTER_OTLP_HEADERS).toBe('Authorization=Bearer token');
-    });
-
-    it('includes custom env vars from profile settings', () => {
-      const profile: Profile = {
-        name: 'test',
-        model: 'claude-sonnet-4-20250514',
-        settings: {
-          env: {
-            DEBUG: 'true',
-            NODE_ENV: 'test',
-          },
-        },
-      };
-
-      const env = buildEnvVars(profile);
-      expect(env.DEBUG).toBe('true');
-      expect(env.NODE_ENV).toBe('test');
-    });
-
-    it('passes referenced MCP environment variables into the container', () => {
-      process.env.GITHUB_TOKEN = 'runtime-secret';
-      const profile: Profile = {
-        name: 'test',
-        model: 'claude-sonnet-4-20250514',
-        mcp_servers: [{
-          name: 'github',
-          command: 'npx',
-          env: { GITHUB_TOKEN: '${GITHUB_TOKEN}' },
-        }],
-      };
-
-      const env = buildEnvVars(profile);
-
-      expect(env.GITHUB_TOKEN).toBe('runtime-secret');
-    });
-
-    it('fails clearly when a referenced MCP variable is missing', () => {
-      delete process.env.GITHUB_TOKEN;
-      const profile: Profile = {
-        name: 'my-setup',
-        model: 'claude-sonnet-4-20250514',
-        mcp_servers: [{
-          name: 'github',
-          command: 'npx',
-          env: { GITHUB_TOKEN: '${GITHUB_TOKEN}' },
-        }],
-      };
-
-      expect(() => buildEnvVars(profile)).toThrow(
-        'Profile "my-setup" requires GITHUB_TOKEN for MCP server "github"'
-      );
-    });
-
-    it('allows references with defaults when the host variable is absent', () => {
-      delete process.env.CACHE_DIR;
-      const profile: Profile = {
-        name: 'test',
-        model: 'claude-sonnet-4-20250514',
-        mcp_servers: [{
-          name: 'cache',
-          command: 'node',
-          env: { CACHE_DIR: '${CACHE_DIR:-/tmp/cache}' },
-        }],
-      };
-
-      expect(buildEnvVars(profile).CACHE_DIR).toBeUndefined();
-    });
-
-    it('does not require host variables for literal values in manual profiles', () => {
-      const profile: Profile = {
-        name: 'manual',
-        model: 'claude-sonnet-4-20250514',
-        mcp_servers: [{
-          name: 'local',
-          command: 'node',
-          env: { NODE_ENV: 'test' },
-        }],
-      };
-
-      expect(() => buildEnvVars(profile)).not.toThrow();
-    });
+  it('uses override, task, profile, and default timeout precedence', () => {
+    expect(resolveRunTimeout(10, 20, 30)).toBe(10);
+    expect(resolveRunTimeout(undefined, 20, 30)).toBe(20);
+    expect(resolveRunTimeout(undefined, undefined, 30)).toBe(30);
+    expect(resolveRunTimeout()).toBe(300);
   });
 });

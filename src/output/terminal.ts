@@ -1,169 +1,76 @@
 import chalk from 'chalk';
-import type { RunResult } from '../core/types.js';
-import { buildReportModel, type ProfileStats } from './report-model.js';
-import { formatCost, formatDuration, formatPercent, formatScore } from './format.js';
+import type { BenchmarkAnalysis, RunResult } from '../core/types.js';
+import { buildReportModel } from './report-model.js';
+import { formatCost, formatDuration, formatPercent } from './format.js';
 
-type Align = 'left' | 'right';
-
-interface Cell {
-  text: string;
-  paint?: (s: string) => string;
+function pad(value: string, width: number, right = false): string {
+  return right ? value.padStart(width) : value.padEnd(width);
 }
 
-const GOLD = chalk.hex('#f5c542');
-const SILVER = chalk.hex('#c0c6cf');
-const BRONZE = chalk.hex('#cd8a4b');
-
-function rankPaint(rank: number): (s: string) => string {
-  if (rank === 1) return (s) => GOLD.bold(s);
-  if (rank === 2) return (s) => SILVER(s);
-  if (rank === 3) return (s) => BRONZE(s);
-  return (s) => chalk.dim(s);
+function table(headers: string[], rows: string[][], rightColumns: Set<number>): string[] {
+  const widths = headers.map((header, index) => Math.max(
+    header.length,
+    ...rows.map(row => row[index]?.length ?? 0)
+  ));
+  const render = (row: string[]) => row.map((value, index) =>
+    pad(value, widths[index], rightColumns.has(index))
+  ).join('  ');
+  return [chalk.bold(render(headers)), chalk.dim(widths.map(width => '-'.repeat(width)).join('  ')), ...rows.map(render)];
 }
 
-/**
- * Render an aligned table. Column widths are measured from the *plain* text
- * (before color is applied) so ANSI codes never break alignment.
- */
-function renderTable(headers: Cell[], rows: Cell[][], aligns: Align[]): string[] {
-  const cols = headers.length;
-  const widths = new Array<number>(cols).fill(0);
-  const measure = (cell: Cell | undefined) => (cell ? cell.text.length : 0);
+export function renderReportToTerminal(
+  results: RunResult[],
+  persistedAnalysis?: BenchmarkAnalysis
+): string {
+  if (results.length === 0 && persistedAnalysis === undefined) return chalk.yellow('No results to report.');
+  const { analysis, aggregate, profiles, tasks, matrix } = buildReportModel(results, persistedAnalysis);
+  const out: string[] = ['', chalk.bold.underline('Benchmark Results'), ''];
 
-  headers.forEach((h, i) => (widths[i] = Math.max(widths[i], measure(h))));
-  rows.forEach((r) => r.forEach((c, i) => (widths[i] = Math.max(widths[i], measure(c)))));
-
-  const pad = (cell: Cell, i: number): string => {
-    const align = aligns[i] ?? 'left';
-    const padded = align === 'right' ? cell.text.padStart(widths[i]) : cell.text.padEnd(widths[i]);
-    return cell.paint ? cell.paint(padded) : padded;
-  };
-
-  const out: string[] = [];
-  out.push(headers.map((h, i) => pad({ ...h, paint: h.paint ?? ((s) => chalk.bold(s)) }, i)).join('  '));
-  out.push(widths.map((w) => chalk.dim('─'.repeat(w))).join('  '));
-  rows.forEach((r) => out.push(r.map((c, i) => pad(c, i)).join('  ')));
-  return out;
-}
-
-function paintScoreCell(score: number | null, isBest: boolean, hasRun: boolean, success: boolean): Cell {
-  if (!hasRun) {
-    return { text: '—', paint: (s) => chalk.dim(s) };
-  }
-  const text = formatScore(score);
-  if (!success) {
-    return { text, paint: (s) => chalk.red(s) };
-  }
-  if (isBest) {
-    return { text, paint: (s) => chalk.green.bold(s) };
-  }
-  return { text };
-}
-
-/**
- * The colorized, terminal-native view of a benchmark: winner banner, score
- * matrix, and profile leaderboard. This is the "wow" surface — full ANSI color
- * that `report.md` (plain markdown) can't carry.
- */
-export function renderReportToTerminal(results: RunResult[]): string {
-  if (results.length === 0) {
-    return chalk.yellow('No results to report.');
-  }
-
-  const model = buildReportModel(results);
-  const { aggregate, profiles, tasks, matrix, profileTotals, winner } = model;
-  const out: string[] = [];
-
+  const decision = analysis.decision.winner
+    ? chalk.green.bold(`Winner: ${analysis.decision.winner}`)
+    : analysis.decision.leader
+      ? chalk.yellow.bold(`Provisional leader: ${analysis.decision.leader}`)
+      : chalk.yellow.bold('No eligible leader');
+  out.push(`  ${decision}`);
+  out.push(chalk.dim(`  ${analysis.decision.reason}`));
   out.push('');
-  out.push(chalk.bold.underline('🏆 Benchmark Results'));
-  out.push('');
-
-  // Winner banner.
-  if (winner && profiles.length > 1) {
-    out.push(
-      GOLD.bold('  🥇 Winner: ') +
-      chalk.bold(winner.name) +
-      chalk.dim('  ·  ') +
-      chalk.green.bold(`${formatScore(winner.totalScore)} pts`) +
-      chalk.dim(`  ·  ${winner.successful}/${winner.runs} passed  ·  ${formatCost(winner.totalCost)}`)
-    );
-    out.push('');
-  }
-
-  // Summary line.
-  const passColor = aggregate.successfulRuns === aggregate.totalRuns ? chalk.green : chalk.yellow;
   out.push(
-    chalk.dim('  ') +
-    `${aggregate.totalRuns} runs  ` +
-    passColor(`${aggregate.successfulRuns}/${aggregate.totalRuns} passed`) +
-    chalk.dim('  ·  ') +
-    `${formatCost(aggregate.totalCost)}` +
-    chalk.dim('  ·  ') +
-    `${formatDuration(aggregate.totalDuration)}` +
-    chalk.dim('  ·  ') +
-    `score ${formatScore(aggregate.totalScore)}`
+    `  ${aggregate.validRuns}/${aggregate.expectedRuns} valid  ·  `
+    + `${aggregate.successfulRuns} passed  ·  ${aggregate.failedRuns} failed  ·  `
+    + `${aggregate.timedOutRuns} timed out  ·  ${aggregate.erroredRuns} errored  ·  `
+    + `${aggregate.missingRuns} missing`
   );
+  out.push(`  ${formatCost(aggregate.totalCost)}  ·  ${formatDuration(aggregate.totalDuration)}  ·  ${analysis.repetitions} repetition(s)`);
   out.push('');
 
-  // Score matrix.
-  out.push(chalk.bold('📊 Score Matrix') + chalk.dim('  (rows & columns ranked by score · ') + chalk.green('best') + chalk.dim(' / ') + chalk.red('fail') + chalk.dim(')'));
-  out.push('');
-
-  const matrixHeaders: Cell[] = [
-    { text: 'Task' },
-    ...profiles.map((p) => ({ text: p.name, paint: p.rank === 1 ? (s: string) => GOLD.bold(s) : undefined })),
-  ];
-  const matrixRows: Cell[][] = tasks.map((task) => {
+  out.push(chalk.bold('Results Matrix'));
+  const matrixRows = tasks.map(task => {
     const row = matrix.get(task.id)!;
-    return [
-      { text: task.id },
-      ...profiles.map((p) => {
-        const c = row.get(p.name)!;
-        return paintScoreCell(c.score, c.isBestInRow, c.hasRun, c.success);
-      }),
-    ];
+    return [task.id, ...profiles.map(profile => {
+      const cell = row.get(profile.name)!;
+      if (!cell.complete) return `${cell.passed}/${cell.expected_samples} incomplete`;
+      return `${cell.passed}/${cell.expected_samples} ${cell.mean_cost_usd === null ? '-' : formatCost(cell.mean_cost_usd)}`;
+    })];
   });
-  // Totals footer row.
-  matrixRows.push([
-    { text: 'Total', paint: (s) => chalk.bold(s) },
-    ...profiles.map((p) => ({
-      text: formatScore(profileTotals.get(p.name) ?? 0),
-      paint: (s: string) => chalk.bold(s),
-    })),
+  out.push(...table(['Task', ...profiles.map(profile => profile.name)], matrixRows, new Set(profiles.map((_, index) => index + 1))).map(line => `  ${line}`));
+  out.push('');
+
+  out.push(chalk.bold('Profile Ranking'));
+  const profileRows = profiles.map(profile => [
+    profile.rank === null ? '-' : String(profile.rank),
+    profile.name,
+    `${profile.valid_samples}/${profile.expected_samples}`,
+    String(profile.passed),
+    profile.success_rate === null ? '-' : formatPercent(profile.success_rate),
+    profile.cost_per_pass_usd === null ? '-' : formatCost(profile.cost_per_pass_usd),
+    profile.duration_per_pass_seconds === null ? '-' : formatDuration(profile.duration_per_pass_seconds),
+    profile.eligible ? 'eligible' : 'ineligible',
   ]);
-  const matrixAligns: Align[] = ['left', ...profiles.map(() => 'right' as Align)];
-  for (const line of renderTable(matrixHeaders, matrixRows, matrixAligns)) {
-    out.push('  ' + line);
-  }
+  out.push(...table(
+    ['#', 'Profile', 'Coverage', 'Passed', 'Success', 'Cost/pass', 'Time/pass', 'Status'],
+    profileRows,
+    new Set([0, 2, 3, 4, 5, 6])
+  ).map(line => `  ${line}`));
   out.push('');
-
-  // Leaderboard.
-  out.push(chalk.bold('🏅 Profile Leaderboard'));
-  out.push('');
-  const lbHeaders: Cell[] = [
-    { text: '#' },
-    { text: 'Profile' },
-    { text: 'Score' },
-    { text: 'Avg' },
-    { text: 'Passed' },
-    { text: 'Cost' },
-  ];
-  const lbRows: Cell[][] = profiles.map((p: ProfileStats) => {
-    const paint = rankPaint(p.rank);
-    return [
-      { text: String(p.rank), paint },
-      { text: p.name, paint },
-      { text: formatScore(p.totalScore), paint },
-      { text: formatScore(p.avgScore) },
-      { text: `${p.successful}/${p.runs} (${formatPercent(p.successRate)})`, paint: p.successful === p.runs ? (s) => chalk.green(s) : (s) => chalk.yellow(s) },
-      { text: formatCost(p.totalCost) },
-    ];
-  });
-  const lbAligns: Align[] = ['right', 'left', 'right', 'right', 'right', 'right'];
-  for (const line of renderTable(lbHeaders, lbRows, lbAligns)) {
-    out.push('  ' + line);
-  }
-  out.push('');
-
   return out.join('\n');
 }

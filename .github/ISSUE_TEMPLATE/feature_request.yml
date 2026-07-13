@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a focused improvement to hoodstrut
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What benchmark workflow or user need is currently unsupported?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the interface and expected result, not only an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: integrity
+    attributes:
+      label: Benchmark integrity impact
+      description: How should this affect security, reproducibility, verification, profile fidelity, or methodology?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

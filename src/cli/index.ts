@@ -6,13 +6,15 @@ import { runCommand } from './commands/run.js';
 import { benchmarkCommand } from './commands/benchmark.js';
 import { reportCommand } from './commands/report.js';
 import { initCommand } from './commands/init.js';
+import { loadPackageMetadata } from './package-metadata.js';
 
 const program = new Command();
+const packageMetadata = loadPackageMetadata();
 
 program
-  .name('hoodstrut')
+  .name(packageMetadata.name)
   .description('Benchmark LLM coding assistants with reproducible, isolated test runs')
-  .version('0.1.0');
+  .version(packageMetadata.version);
 
 program.addCommand(profileCommand);
 program.addCommand(taskCommand);

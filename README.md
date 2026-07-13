@@ -1,15 +1,19 @@
 # hoodstrut
 
-Benchmark LLM coding assistants with reproducible, isolated test runs.
+Benchmark real Claude Code configurations with reproducible, isolated test runs.
 
 hoodstrut runs coding tasks against Claude Code inside disposable Docker
 containers, captures real token/cost/duration metrics from the Agent SDK,
-determines success (command exit code, output patterns, or an AI judge), scores
-each run, and generates Markdown reports.
+verifies changes against explicit test evidence, ranks repeated trials with
+correctness-first statistics, and generates auditable Markdown reports.
 
 **What makes it different:** point it at your *actual* `~/.claude` setup with
 `hoodstrut profile scan` and benchmark the configuration you really use — not a
 hypothetical one.
+
+Hoodstrut is a public beta focused on Claude Code. The runner and result format
+are usable today, but the bundled task corpus is still intentionally small and
+the profile/task schemas may evolve before 1.0. See the [roadmap](ROADMAP.md).
 
 ---
 
@@ -22,17 +26,27 @@ hypothetical one.
   `.env` file in the current directory automatically (or from a real
   environment variable, which takes precedence) — no `source`/`export` needed.
 
+Scaffolding and validation are offline. `run` and `benchmark` make paid
+Anthropic API calls; repetitions multiply that usage.
+
 ---
 
 ## Install
 
-hoodstrut is a TypeScript CLI. From a clone:
+Install the CLI from npm:
 
 ```bash
-git clone <repo-url> hoodstrut
+npm install --global hoodstrut
+hoodstrut --version
+```
+
+To work from source instead:
+
+```bash
+git clone https://github.com/alexrowe12/hoodstrut.git
 cd hoodstrut
-npm install
-npm run build        # compiles to dist/ and copies the Docker assets
+npm ci
+npm run build
 npm link             # optional: puts `hoodstrut` on your PATH
 ```
 
@@ -40,24 +54,29 @@ Without `npm link`, invoke it as `node dist/cli/index.js <command>`.
 
 ---
 
-## Quickstart (the wow demo)
+## Quickstart
 
 ```bash
-# 1. Scaffold a project with runnable examples in the current directory.
+# 1. Create an empty project and scaffold the bundled examples.
+mkdir hoodstrut-demo && cd hoodstrut-demo
 hoodstrut init --with-examples
 
-# 2. Optional: if you skipped the prompt, add your key by hand
+# 2. These checks are offline and do not require Docker or an API key.
+hoodstrut profile validate profiles/examples/default.yaml
+hoodstrut task validate tasks/examples/fix-todo-persistence.md
+
+# 3. If you skipped the interactive key prompt, add your key by hand.
 cp .env.example .env        # then edit .env and set ANTHROPIC_API_KEY
 
-# 3. Optional: turn your real Claude Code setup into a profile
+# 4. Optional: turn your real Claude Code setup into a profile.
 hoodstrut profile scan --name my-setup
 
-# 4. Run a real bugfix task and see how the config performs
+# 5. Run a real bugfix task. This starts Docker and uses the Anthropic API.
 hoodstrut run \
   --profile profiles/examples/default.yaml \
   --task tasks/examples/fix-todo-persistence.md
 
-# 5. Read the report
+# 6. Read the report.
 cat results/report.md
 ```
 
@@ -106,6 +125,7 @@ Run multiple profiles against multiple tasks (cartesian product).
 | `-p, --profiles <list>` | Comma-separated profile names or paths |
 | `-t, --tasks <list>` | Comma-separated task IDs or paths |
 | `-c, --config <file>` | Benchmark YAML config file |
+| `--repetitions <count>` | Independent runs per profile/task pair (default: 1) |
 | `--parallel <count>` | Number of concurrent containers (default: 1) |
 | `--name <name>` | Benchmark name (used in the output directory) |
 | `--timeout <seconds>` | Per-run timeout override |
@@ -114,6 +134,11 @@ Run multiple profiles against multiple tasks (cartesian product).
 Precedence is **flags > config > discovery**. With no flags or config,
 hoodstrut discovers `./profiles/*.yaml` and `./tasks/**/*.md`. Results land in
 `results/benchmark-<name>-<timestamp>/` with `benchmark.json` and `report.md`.
+
+One repetition keeps quick starts inexpensive, but it cannot estimate variance
+or support a winner claim. Use at least three repetitions while tuning a suite
+and at least five before publishing comparative claims. Repetitions multiply
+API usage: `profiles × tasks × repetitions` is the number of agent runs.
 
 The benchmark exits `0` when orchestration completes — individual task failures
 are data, not errors. It exits `1` only on a config/infrastructure failure.
@@ -129,12 +154,18 @@ hoodstrut profile show default             # show a profile's details
 hoodstrut profile validate ./my.yaml       # validate against the schema
 hoodstrut profile scan --name my-setup     # import your ~/.claude config
 ```
-`scan` flags: `-n/--name`, `-p/--path <dir>` (default `~/.claude`), `-o/--output`
-(default `./profiles`), `--project` (scan `.claude/` in the cwd), `--dry-run`,
-`--validate`. MCP environment values are replaced with `${VAR}` references,
-never copied into generated profile YAML. Set every required variable in `.env`
-or the host environment before running that profile; hoodstrut forwards the
-resolved value to the container without writing it back to the profile.
+`scan` flags: `-n/--name`, `-p/--path <dir>`, `-o/--output` (default
+`./profiles`), `--project`, `--dry-run`, and `--validate`. With no scope flags,
+the scanner reads only user configuration from `~/.claude` and
+`~/.claude.json`. `--path` replaces that user config directory exactly.
+`--project` reads only the cwd project, while `--project --path <dir>` uses
+`<dir>` as the exact project root. Scans never merge in configuration from a
+different home directory or project.
+
+Generated profiles snapshot complete skill directories beside the profile YAML.
+MCP environment and header secrets are replaced with `${VAR}` references and
+never copied into the YAML. Set every required variable in `.env` or the host
+environment before running the profile.
 
 ### `hoodstrut task`
 ```bash
@@ -148,39 +179,59 @@ hoodstrut task validate ./my-task.md       # validate against the schema
 hoodstrut report ./results                          # (re)generate report.md
 hoodstrut report ./results/benchmark-x --compare ./results/benchmark-y
 ```
-Prints a colorized **score matrix** (tasks × profiles, both ranked by score) and
-a profile leaderboard to the terminal, and writes the same view to `report.md`
-(with a winning-profile callout and a runs table ranked by score). `--compare`
-writes a side-by-side `comparison.md` with signed deltas (success rate, cost,
-tokens, score).
+Prints a colorized results matrix and correctness-first profile ranking, then
+writes the same analysis to `report.md`. Repeated samples are aggregated by
+task and profile with coverage, success confidence intervals, cost, duration,
+and variance. `--compare` writes a side-by-side `comparison.md` and warns when
+task sets, repetition counts, or result coverage are incompatible.
 
 ---
 
 ## Profile schema
 
-Profiles are YAML. Fields (see `src/core/types.ts` for the source of truth):
+Profiles are portable snapshots of behavior-affecting Claude Code configuration,
+not copies of UI preferences such as theme or terminal settings. Hoodstrut
+applies the profile on top of the benchmark repository without replacing the
+repository's own Claude configuration. Fields (see `src/core/types.ts`):
 
 ```yaml
 name: default                 # required, unique identifier
 description: "..."            # optional
 model: claude-sonnet-5        # required, model id (see src/metrics/pricing.ts)
-effort: medium                # low | medium | high (default: medium)
-system_prompt: |              # optional, written to CLAUDE.md in the container
+effort: medium                # low | medium | high | max (default: medium)
+system_prompt: |              # appended to the Claude Code system-prompt preset
   You are an expert engineer...
 mcp_servers:                  # optional
   - name: filesystem
+    type: stdio
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem"]
-    env: { KEY: "value" }
+    env: { TOKEN: "${TOKEN}" }
+  - name: remote
+    type: http
+    url: https://example.com/mcp
+    headers: { Authorization: "Bearer ${MCP_TOKEN}" }
 skills:                       # optional
   - name: deploy
-    source: /path/to/SKILL.md
+    source: my-profile.assets/skills/deploy # relative to this YAML
 settings:                     # optional
   max_turns: 100
   timeout: 600                # seconds
-  allowed_tools: ["Bash", "Edit"]
+  allowed_tools: ["Bash", "Edit"]       # SDK auto-approval rules
+  disallowed_tools: ["WebFetch"]        # always denied
   env: { FOO: "bar" }
 ```
+
+Profile values map directly to Agent SDK options: `model`, `effort`,
+`maxTurns`, `allowedTools`, `disallowedTools`, and `mcpServers`. Runs use the
+Claude Code system-prompt and tool presets; `system_prompt` is appended to that
+preset. Skills are loaded from an isolated user config directory, while the
+fixture's user-independent project and local instructions remain available.
+`allowed_tools` does not restrict the available tool set; use
+`disallowed_tools` to block tools.
+
+Timeout precedence is CLI or benchmark override, then task timeout, then profile
+timeout, then the 300-second default.
 
 ## Task schema
 
@@ -191,7 +242,8 @@ Tasks are Markdown with YAML frontmatter:
 id: fix-todo-persistence      # required
 title: Todos don't persist    # required
 repo: ./repos/todo-app        # required (local path or public git URL)
-branch: main                  # default: main
+branch: main                  # mutable; default when commit is omitted
+# commit: 0123456789abcdef0123456789abcdef01234567 # immutable alternative
 # Explicit verification — required, pick one type:
 verification:
   type: command               # command | pattern | ai_judge
@@ -201,13 +253,27 @@ working_dir: subdir           # working dir relative to repo root
 setup_commands: ["npm install"]
 tags: [bugfix, storage]
 difficulty: easy              # easy | medium | hard | expert
-estimated_tokens: 25000       # scoring baseline (default: 25000)
-expected_time: 150            # seconds, scoring baseline (default: 150)
+estimated_tokens: 25000       # optional task metadata; not used for ranking
+expected_time: 150            # optional task metadata; not used for ranking
 ---
 
 ## Description
 Markdown body — written like a Jira ticket.
 ```
+
+`branch` and `commit` are mutually exclusive. Published benchmark suites should
+pin remote or local Git repositories with a full 40- or 64-character `commit`:
+
+```yaml
+repo: https://github.com/example/project.git
+commit: 0123456789abcdef0123456789abcdef01234567
+```
+
+Hoodstrut fetches that object directly, checks it out detached, and verifies that
+the resolved `HEAD` is an exact match. Branch-based tasks remain supported, but
+branches are mutable; each run records the commit that the branch resolved to.
+Plain local directories are working-tree snapshots and are identified by a
+deterministic content checksum.
 
 Pattern verification runs a command and matches only its output, never the
 assistant conversation:
@@ -236,23 +302,30 @@ tasks must add a command because conversational claims are not verification.
 
 ---
 
-## Scoring
+## Benchmark methodology
 
-Each completed pass, failure, or agent timeout with metrics gets a numeric
-score. Infrastructure, agent-process, verifier, and judge errors score `null`:
+Hoodstrut uses the versioned `lexicographic-v2` methodology. There is no blended
+point score: correctness always dominates efficiency.
 
-```
-score = round( (success_bonus + cost_score + time_score) * difficulty_multiplier )
+1. Rank complete profiles by verified passes, descending.
+2. Break exact correctness ties by total cost per verified pass, ascending.
+3. Break remaining ties by total duration per verified pass, ascending.
 
-success_bonus         = 500 if success else 0
-cost_score            = max(0, 300 - 100 * actual_cost / expected_cost)
-time_score            = max(0, 200 - 100 * actual_time / expected_time)
-difficulty_multiplier = easy 0.8 | medium 1.0 | hard 1.3 | expert 1.6
-```
+`passed`, `failed`, and `timed_out` are valid benchmark outcomes. Agent,
+verifier, judge, metrics, and infrastructure errors are unusable samples. A
+missing or unusable expected sample makes the affected profile ineligible and
+prevents the benchmark from declaring a winner. Reports may still show a
+provisional leader so partial data remains inspectable.
 
-`expected_cost` is derived from the task's `estimated_tokens` (40% input / 60%
-output) priced at the profile's model. So a cheaper, faster, successful run on a
-harder task scores highest. See `src/core/scorer.ts`.
+Success rates include Wilson 95% confidence intervals. Cost and duration report
+sample variance, standard deviation, and a 95% confidence interval for the
+mean when at least two samples exist. Hoodstrut declares a winner only when all
+profiles are complete, there are multiple repetitions and competitors, and the
+leader's relevant confidence interval does not overlap every competitor's.
+Otherwise it reports an incomplete, tied, insufficient, or inconclusive result.
+
+Legacy numeric `score` fields remain readable in historical result files but are
+not produced, backfilled, or used by current rankings.
 
 ---
 
@@ -261,7 +334,7 @@ harder task scores highest. See `src/core/scorer.ts`.
 ```
 results/
 ├── run-<timestamp>/
-│   ├── run-result.json   # metrics, success, score, file changes, warnings
+│   ├── run-result.json   # outcome plus repository, image, runtime, and tool provenance
 │   ├── stdout.log
 │   ├── stderr.log
 │   ├── changes.patch     # binary-safe diff of agent changes
@@ -271,7 +344,7 @@ results/
 │   └── judge-result.json # raw + parsed AI judgment, for judge tasks
 ├── report.md             # aggregate report across all runs
 └── benchmark-<name>-<timestamp>/
-    ├── benchmark.json     # summary + per-run results
+    ├── benchmark.json     # expected coverage, statistics, eligibility, and decision
     ├── report.md
     └── comparison.md      # only when `report --compare` is used
 ```
@@ -282,11 +355,11 @@ results/
 
 ## How a run works
 
-1. **Prepare** — copy a local working tree or clone a public URL into a normalized source snapshot. Source Git metadata is not reused; `.gitignore`, `.github`, and other project files are preserved.
-2. **Build** — build the `hoodstrut-runner` Docker image once (cached across runs).
-3. **Configure** — inject the profile (CLAUDE.md, `.claude/settings.local.json`, `.mcp.json`, skills).
+1. **Prepare** — copy a local working tree, resolve a branch, or fetch an exact commit into a normalized source snapshot. Record the resolved commit and a checksum before setup changes it. Source Git metadata is not reused; `.gitignore`, `.github`, and other project files are preserved.
+2. **Build** — build a content-addressed `hoodstrut-runner:<version>-<hash>` image from digest-pinned Node, frozen Debian repositories, and npm lockfiles. Unchanged build inputs reuse the cached image.
+3. **Configure** — materialize profile skills and a non-secret runtime config in an isolated Claude home; leave fixture configuration untouched.
 4. **Set up** — run `setup_commands`, then commit the configured workspace as a clean benchmark-owned Git baseline.
-5. **Execute** — run Claude Code via the Agent SDK inside the container.
+5. **Execute** — run via the Agent SDK with explicit profile options and the Claude Code prompt/tool presets.
 6. **Capture** — retain a binary-safe patch and hashed file manifest before verifier-generated files can alter the workspace evidence.
 7. **Verify** — run the required verification command, match patterns only against its transcript, or give the patch and test evidence to the AI judge.
 8. **Cleanup** — force-remove the containers and temporary workspace (containers are named `hoodstrut-*`).
@@ -296,13 +369,26 @@ adds OTEL export for your own observability backend; it does not affect metrics.
 Hoodstrut-owned metrics and telemetry files live outside the measured workspace
 and are never reported as agent changes.
 
+### Reproducibility metadata
+
+Every new `run-result.json` contains a `provenance` object with:
+
+- Hoodstrut version and the SHA-256 of all runner build inputs.
+- Actual Docker image ID, image tag, platform, and Docker Engine/API versions.
+- Requested branch or commit, resolved commit, immutability status, and prepared-tree checksum.
+- Node, npm, Git, Python, Claude Code, and Agent SDK versions observed inside the image.
+
+For the strongest comparison, require matching runner build hashes, repository
+content hashes, platforms, and tool versions. A matching image tag alone is not
+treated as proof: Hoodstrut validates the image labels and records its actual ID.
+
 ---
 
 ## Troubleshooting
 
 - **`metrics: null` / "Metrics file not found"** — the SDK didn't produce usage
   data. Common cause: the profile's `model` is one your API key can't access.
-  Check `model` against `src/metrics/pricing.ts` and your key's entitlements.
+  Check the profile's `model`, your key's entitlements, and the retained stderr.
 - **"Not logged in" / auth errors** — `ANTHROPIC_API_KEY` isn't set. Make sure
   it's in a `.env` file in the directory you're running from (hoodstrut loads it
   automatically), or exported in your shell.
@@ -310,8 +396,9 @@ and are never reported as agent changes.
   references an environment variable that is not available. Add it to the
   current project's `.env` file or export it in the host environment. Do not put
   the literal secret in the profile YAML.
-- **Docker errors** — ensure the daemon is running (`docker ps`). Use `--build`
-  to force an image rebuild after changing the Docker assets.
+- **Docker errors** — ensure the daemon is running (`docker ps`). Runner asset
+  changes automatically produce a new content-addressed tag; use `--build` to
+  force a clean rebuild of the current inputs.
 - **Leftover containers** — hoodstrut names containers `hoodstrut-*` and
   force-removes them, including on Ctrl-C. If you kill it with `SIGKILL`, sweep
   with `docker ps -a --filter name=hoodstrut- -q | xargs docker rm -f`.
@@ -321,15 +408,17 @@ and are never reported as agent changes.
 ## Development
 
 ```bash
-npm run build       # compile + copy Docker assets to dist/
-npm test            # one-shot test run
-npm run test:watch  # re-run tests on change
-npm run lint
-npm run typecheck
+npm run check         # lint, typecheck, unit tests, clean build, artifact checks
+npm run test:package  # install the packed tarball and run the offline quickstart
+npm run test:docker   # build the runner and run Docker integration tests
+npm run test:watch    # re-run unit tests on change
 ```
 
-See `.claude/MVP_plan.md` for the full vision and phase history.
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Report
+suspected vulnerabilities through the private process in
+[SECURITY.md](SECURITY.md). Maintainer release steps are in
+[RELEASING.md](RELEASING.md).
 
 ## License
 
-MIT
+[MIT](LICENSE)

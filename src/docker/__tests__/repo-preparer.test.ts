@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execa } from 'execa';
 import { dir as tmpDir } from 'tmp-promise';
-import { prepareRepo, cleanupRepo } from '../repo-preparer.js';
+import { prepareRepo, cleanupRepo, hashPreparedTree } from '../repo-preparer.js';
 
 describe('repo-preparer', () => {
   let sourceDir: string;
@@ -106,7 +106,7 @@ describe('repo-preparer', () => {
       await execa('git', ['commit', '--quiet', '-m', 'fixture'], { cwd: sourceDir });
 
       const targetDir = join(destDir, 'workspace');
-      await prepareRepo({
+      const prepared = await prepareRepo({
         repo: pathToFileURL(sourceDir).href,
         branch: 'main',
         destDir: targetDir,
@@ -115,7 +115,75 @@ describe('repo-preparer', () => {
       await expect(readFile(join(targetDir, '.gitignore'), 'utf-8')).resolves.toBe('node_modules/\n');
       await expect(readFile(join(targetDir, '.github', 'workflows', 'ci.yml'), 'utf-8')).resolves.toBe('name: CI\n');
       await expect(readFile(join(targetDir, '.git', 'HEAD'), 'utf-8')).rejects.toThrow();
+      expect(prepared.sourceType).toBe('remote_git');
+      expect(prepared.resolvedCommit).toMatch(/^[0-9a-f]{40}$/);
+      expect(prepared.immutable).toBe(false);
     });
+
+    it('checks out and verifies an immutable historical commit', async () => {
+      await execa('git', ['init', '--quiet', '--initial-branch', 'main'], { cwd: sourceDir });
+      await execa('git', ['config', 'user.email', 'test@example.com'], { cwd: sourceDir });
+      await execa('git', ['config', 'user.name', 'Test'], { cwd: sourceDir });
+      await writeFile(join(sourceDir, 'version.txt'), 'one\n');
+      await execa('git', ['add', '--all'], { cwd: sourceDir });
+      await execa('git', ['commit', '--quiet', '-m', 'one'], { cwd: sourceDir });
+      const { stdout: firstCommit } = await execa('git', ['rev-parse', 'HEAD'], { cwd: sourceDir });
+      await writeFile(join(sourceDir, 'version.txt'), 'two\n');
+      await execa('git', ['commit', '--quiet', '-am', 'two'], { cwd: sourceDir });
+
+      const targetDir = join(destDir, 'workspace');
+      const prepared = await prepareRepo({
+        repo: pathToFileURL(sourceDir).href,
+        commit: firstCommit,
+        destDir: targetDir,
+      });
+
+      await expect(readFile(join(targetDir, 'version.txt'), 'utf-8')).resolves.toBe('one\n');
+      expect(prepared).toMatchObject({
+        sourceType: 'remote_git',
+        requestedCommit: firstCommit,
+        resolvedCommit: firstCommit,
+        immutable: true,
+      });
+      expect(prepared.contentSha256).toMatch(/^[0-9a-f]{64}$/);
+    });
+  });
+
+  it('checks out an exact commit from a local Git repository', async () => {
+    await execa('git', ['init', '--quiet', '--initial-branch', 'main'], { cwd: sourceDir });
+    await execa('git', ['config', 'user.email', 'test@example.com'], { cwd: sourceDir });
+    await execa('git', ['config', 'user.name', 'Test'], { cwd: sourceDir });
+    await writeFile(join(sourceDir, 'tracked.txt'), 'committed\n');
+    await execa('git', ['add', '--all'], { cwd: sourceDir });
+    await execa('git', ['commit', '--quiet', '-m', 'fixture'], { cwd: sourceDir });
+    const { stdout: commit } = await execa('git', ['rev-parse', 'HEAD'], { cwd: sourceDir });
+    await writeFile(join(sourceDir, 'tracked.txt'), 'dirty working tree\n');
+
+    const prepared = await prepareRepo({
+      repo: sourceDir,
+      commit,
+      destDir: join(destDir, 'workspace'),
+    });
+
+    await expect(readFile(join(destDir, 'workspace', 'tracked.txt'), 'utf-8')).resolves.toBe('committed\n');
+    expect(prepared).toMatchObject({
+      sourceType: 'local_git',
+      requestedCommit: commit,
+      resolvedCommit: commit,
+      immutable: true,
+    });
+  });
+
+  it('hashes prepared trees deterministically and detects content changes', async () => {
+    const file = join(sourceDir, 'file.txt');
+    await writeFile(file, 'one\n');
+    const first = await hashPreparedTree(sourceDir);
+    const second = await hashPreparedTree(sourceDir);
+    await writeFile(file, 'two\n');
+    const changed = await hashPreparedTree(sourceDir);
+
+    expect(second).toBe(first);
+    expect(changed).not.toBe(first);
   });
 
   describe('cleanupRepo', () => {

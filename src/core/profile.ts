@@ -1,5 +1,5 @@
 import { readFile, readdir } from 'node:fs/promises';
-import { join, extname } from 'node:path';
+import { dirname, isAbsolute, join, resolve, extname } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { ProfileSchema, type Profile } from './types.js';
 
@@ -15,7 +15,15 @@ export async function loadProfile(path: string): Promise<Profile> {
     throw new Error(`Invalid profile at ${path}:\n${errors}`);
   }
 
-  return result.data;
+  return {
+    ...result.data,
+    skills: result.data.skills?.map(skill => ({
+      ...skill,
+      source: isAbsolute(skill.source)
+        ? skill.source
+        : resolve(dirname(path), skill.source),
+    })),
+  };
 }
 
 export async function validateProfile(path: string): Promise<{ valid: boolean; errors?: string[] }> {

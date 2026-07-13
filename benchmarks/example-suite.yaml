@@ -6,7 +6,7 @@ name: example-suite
 
 profiles:
   # Bare names resolve to ./profiles/<name>.yaml; paths are used as-is.
-  # default (Sonnet) vs fast (Haiku) gives an easy cost/score contrast.
+  # default (Sonnet) vs fast (Haiku) demonstrates correctness-first comparison.
   - profiles/examples/default.yaml
   - profiles/examples/fast.yaml
 
@@ -18,6 +18,9 @@ tasks:
 
 # Number of concurrent Docker containers (default: 1)
 parallel: 2
+
+# Independent samples per profile/task pair. This multiplies API usage.
+repetitions: 3
 
 # Optional per-run timeout override in seconds
 # timeout: 300

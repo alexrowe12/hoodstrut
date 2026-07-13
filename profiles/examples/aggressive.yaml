@@ -9,3 +9,5 @@ system_prompt: |
 settings:
   max_turns: 100
   timeout: 600
+  allowed_tools: [Read, Edit, Write, Bash]
+  disallowed_tools: [WebFetch]

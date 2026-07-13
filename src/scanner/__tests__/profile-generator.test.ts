@@ -5,15 +5,14 @@ import type { ScanResult } from '../index.js';
 describe('generateProfile', () => {
   const baseScanResult: ScanResult = {
     sourcePath: '/Users/test/.claude',
+    scope: 'user',
     settings: {
-      global: {},
-      project: {},
+      base: {},
+      local: {},
       merged: {},
     },
     mcpServers: {
-      global: [],
-      project: [],
-      merged: [],
+      servers: [],
       requiredEnvVars: [],
       warnings: [],
     },
@@ -38,8 +37,8 @@ describe('generateProfile', () => {
     const scanResult: ScanResult = {
       ...baseScanResult,
       settings: {
-        global: {},
-        project: {},
+        base: {},
+        local: {},
         merged: {
           model: 'opus',
           effortLevel: 'high',
@@ -57,8 +56,8 @@ describe('generateProfile', () => {
     const scanResult: ScanResult = {
       ...baseScanResult,
       settings: {
-        global: {},
-        project: {},
+        base: {},
+        local: {},
         merged: {
           model: 'sonnet',
           effortLevel: 'low',
@@ -77,12 +76,12 @@ describe('generateProfile', () => {
     expect(profile.effort).toBe('high');
   });
 
-  it('should map xhigh effort to high', () => {
+  it('should map xhigh effort to max', () => {
     const scanResult: ScanResult = {
       ...baseScanResult,
       settings: {
-        global: {},
-        project: {},
+        base: {},
+        local: {},
         merged: {
           effortLevel: 'xhigh',
         },
@@ -91,18 +90,17 @@ describe('generateProfile', () => {
 
     const { profile } = generateProfile(scanResult, 'test');
 
-    expect(profile.effort).toBe('high');
+    expect(profile.effort).toBe('max');
   });
 
   it('should include MCP servers', () => {
     const scanResult: ScanResult = {
       ...baseScanResult,
       mcpServers: {
-        global: [],
-        project: [],
-        merged: [
+        servers: [
           {
             name: 'github',
+            type: 'stdio',
             command: 'npx',
             args: ['-y', '@anthropic/mcp-server-github'],
             env: { GITHUB_TOKEN: '${GITHUB_TOKEN}' },
@@ -144,7 +142,7 @@ describe('generateProfile', () => {
         {
           name: 'deploy',
           description: 'Deploy the app',
-          sourcePath: '/Users/test/.claude/skills/deploy/SKILL.md',
+          sourcePath: '/Users/test/.claude/skills/deploy',
         },
       ],
     };
@@ -153,7 +151,7 @@ describe('generateProfile', () => {
 
     expect(profile.skills).toHaveLength(1);
     expect(profile.skills?.[0].name).toBe('deploy');
-    expect(profile.skills?.[0].source).toContain('deploy/SKILL.md');
+    expect(profile.skills?.[0].source).toContain('skills/deploy');
   });
 
   it('should include header comment with timestamp', () => {

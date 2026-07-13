@@ -8,7 +8,7 @@ vi.mock('execa', () => ({
   execa: execaMock,
 }));
 
-import { cloneRepo } from '../repo-preparer.js';
+import { cloneRepo, sanitizeRepositorySource } from '../repo-preparer.js';
 
 describe('cloneRepo', () => {
   beforeEach(() => {
@@ -58,5 +58,18 @@ describe('cloneRepo', () => {
     await expect(
       cloneRepo('https://example.com/missing.git', 'main', '/tmp/workspace')
     ).rejects.toThrow('Failed to clone repository: fatal: repository not found');
+  });
+});
+
+describe('repository provenance source', () => {
+  it('removes credentials, query parameters, and fragments from HTTP URLs', () => {
+    expect(sanitizeRepositorySource(
+      'https://user:secret@example.com/org/repo.git?token=secret#fragment'
+    )).toBe('https://example.com/org/repo.git');
+  });
+
+  it('preserves local paths and SSH repository syntax', () => {
+    expect(sanitizeRepositorySource('./repos/app')).toBe('./repos/app');
+    expect(sanitizeRepositorySource('git@example.com:org/repo.git')).toBe('git@example.com:org/repo.git');
   });
 });

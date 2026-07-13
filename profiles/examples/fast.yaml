@@ -1,4 +1,4 @@
 name: fast
-description: "Cheap, fast configuration using Haiku — useful for cost/score contrast"
+description: "Low-effort Haiku configuration for efficiency comparisons"
 model: claude-haiku-4-5-20251001
 effort: low

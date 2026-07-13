@@ -1,9 +1,8 @@
 {
   "name": "hoodstrut",
   "version": "0.1.0",
-  "description": "Benchmarking tool for LLM coding assistants",
+  "description": "Reproducible Docker benchmarks for real Claude Code configurations",
   "type": "module",
-  "main": "./dist/index.js",
   "bin": {
     "hoodstrut": "./dist/cli/index.js"
   },
@@ -14,15 +13,25 @@
     "tasks/smoke",
     "repos/todo-app",
     "benchmarks/example-suite.yaml",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "ROADMAP.md"
   ],
   "scripts": {
-    "build": "tsc && cp -r src/docker/templates dist/docker/ && cp -r src/docker/scripts dist/docker/",
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc && node scripts/copy-runtime-assets.mjs",
+    "check:build": "node scripts/check-build.mjs",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run check:build",
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src/",
+    "test:package": "node scripts/test-package-install.mjs",
+    "test:docker": "node scripts/test-docker.mjs",
+    "lint": "eslint src/ scripts/",
     "typecheck": "tsc --noEmit",
+    "prepack": "npm run build && npm run check:build",
     "prepare": "npm run build"
   },
   "engines": {
@@ -33,26 +42,42 @@
     "benchmark",
     "claude",
     "coding-assistant",
-    "ai"
+    "ai",
+    "claude-code",
+    "agentic-coding",
+    "evaluation",
+    "docker"
   ],
-  "author": "",
+  "author": "Alex Rowe",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexrowe12/hoodstrut.git"
+  },
+  "homepage": "https://github.com/alexrowe12/hoodstrut#readme",
+  "bugs": {
+    "url": "https://github.com/alexrowe12/hoodstrut/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "npm@11.18.0",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.111.0",
-    "chalk": "^5.3.0",
-    "commander": "^12.1.0",
-    "execa": "^9.6.1",
-    "gray-matter": "^4.0.3",
-    "tmp-promise": "^3.0.3",
-    "yaml": "^2.6.1",
-    "zod": "^3.24.1"
+    "@anthropic-ai/sdk": "0.111.0",
+    "chalk": "5.3.0",
+    "commander": "12.1.0",
+    "execa": "9.6.1",
+    "gray-matter": "4.0.3",
+    "tmp-promise": "3.0.3",
+    "yaml": "2.9.0",
+    "zod": "3.25.76"
   },
   "devDependencies": {
-    "@types/node": "^22.10.2",
-    "@typescript-eslint/eslint-plugin": "^8.18.2",
-    "@typescript-eslint/parser": "^8.18.2",
-    "eslint": "^9.17.0",
-    "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "@types/node": "22.20.1",
+    "@typescript-eslint/eslint-plugin": "8.18.2",
+    "@typescript-eslint/parser": "8.18.2",
+    "eslint": "9.39.5",
+    "typescript": "5.7.2",
+    "vitest": "4.1.10"
   }
 }

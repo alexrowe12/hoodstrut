@@ -1,6 +1,5 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 import matter from 'gray-matter';
 
 export interface ScannedSkill {
@@ -9,44 +8,29 @@ export interface ScannedSkill {
   sourcePath: string;
 }
 
-async function parseSkillFile(skillPath: string): Promise<ScannedSkill | null> {
+async function parseSkill(skillDir: string): Promise<ScannedSkill | null> {
+  const skillPath = join(skillDir, 'SKILL.md');
   try {
-    const content = await readFile(skillPath, 'utf-8');
-    const { data } = matter(content);
-
-    const name = typeof data.name === 'string' ? data.name : undefined;
-    if (!name) return null;
-
+    const { data } = matter(await readFile(skillPath, 'utf-8'));
+    if (typeof data.name !== 'string' || !data.name) return null;
     return {
-      name,
+      name: data.name,
       description: typeof data.description === 'string' ? data.description : undefined,
-      sourcePath: skillPath,
+      sourcePath: skillDir,
     };
   } catch {
     return null;
   }
 }
 
-export async function scanSkills(): Promise<ScannedSkill[]> {
-  const skillsDir = join(homedir(), '.claude', 'skills');
-  const skills: ScannedSkill[] = [];
-
+export async function scanSkills(skillsDir: string): Promise<ScannedSkill[]> {
   try {
     const entries = await readdir(skillsDir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-
-      const skillMdPath = join(skillsDir, entry.name, 'SKILL.md');
-      const skill = await parseSkillFile(skillMdPath);
-
-      if (skill) {
-        skills.push(skill);
-      }
-    }
+    const skills = await Promise.all(entries
+      .filter(entry => entry.isDirectory())
+      .map(entry => parseSkill(join(skillsDir, entry.name))));
+    return skills.filter((skill): skill is ScannedSkill => skill !== null);
   } catch {
-    // Skills directory doesn't exist or isn't readable
+    return [];
   }
-
-  return skills;
 }

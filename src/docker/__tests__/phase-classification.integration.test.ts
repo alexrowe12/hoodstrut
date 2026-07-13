@@ -59,7 +59,7 @@ dockerDescribe('Docker phase classification', () => {
       phase: 'setup',
       options: { timedOut: false, exitCode: 2 },
     });
-  });
+  }, 300_000);
 
   it('classifies a setup timeout independently of its exit code', async () => {
     await expect(runContainer({
@@ -72,5 +72,5 @@ dockerDescribe('Docker phase classification', () => {
       phase: 'setup',
       options: { timedOut: true },
     });
-  });
+  }, 300_000);
 });

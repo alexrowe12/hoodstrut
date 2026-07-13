@@ -93,6 +93,7 @@ describe('BenchmarkConfigSchema', () => {
     });
     expect(result.name).toBe('benchmark');
     expect(result.parallel).toBe(1);
+    expect(result.repetitions).toBe(1);
     expect(result.output).toBe('./results');
     expect(result.timeout).toBeUndefined();
   });
@@ -105,6 +106,11 @@ describe('BenchmarkConfigSchema', () => {
   it('rejects non-integer or sub-1 parallel', () => {
     expect(BenchmarkConfigSchema.safeParse({ profiles: ['a'], tasks: ['t'], parallel: 0 }).success).toBe(false);
     expect(BenchmarkConfigSchema.safeParse({ profiles: ['a'], tasks: ['t'], parallel: 2.5 }).success).toBe(false);
+  });
+
+  it('rejects non-integer or sub-1 repetitions', () => {
+    expect(BenchmarkConfigSchema.safeParse({ profiles: ['a'], tasks: ['t'], repetitions: 0 }).success).toBe(false);
+    expect(BenchmarkConfigSchema.safeParse({ profiles: ['a'], tasks: ['t'], repetitions: 1.5 }).success).toBe(false);
   });
 });
 
@@ -140,6 +146,21 @@ describe('buildMatrix', () => {
       'run-profile-a--task-y',
       'run-profile-b--task-x',
       'run-profile-b--task-y',
+    ]);
+  });
+
+  it('expands repetitions into stable, collision-free run ids', async () => {
+    const config = BenchmarkConfigSchema.parse({
+      profiles: [join(fixtureDir, 'profile-a.yaml')],
+      tasks: [join(fixtureDir, 'task-x.md')],
+      repetitions: 3,
+    });
+
+    const matrix = await buildMatrix(config);
+    expect(matrix.specs.map(spec => [spec.repetition, spec.runId])).toEqual([
+      [1, 'run-profile-a--task-x--r001'],
+      [2, 'run-profile-a--task-x--r002'],
+      [3, 'run-profile-a--task-x--r003'],
     ]);
   });
 
@@ -199,7 +220,7 @@ parallel: 3
 describe('summarizeBenchmark', () => {
   const config = BenchmarkConfigSchema.parse({ name: 'suite', profiles: ['a'], tasks: ['x'] });
 
-  it('aggregates success, cost, and score', () => {
+  it('aggregates success and cost without writing a legacy point total', () => {
     const results = [
       makeRunResult({ success: true, cost: 0.1, score: 600 }),
       makeRunResult({ success: false, cost: 0.2, score: 100 }),
@@ -213,7 +234,7 @@ describe('summarizeBenchmark', () => {
     expect(summary.failed_runs).toBe(1);
     expect(summary.errored_runs).toBe(0);
     expect(summary.total_cost_usd).toBeCloseTo(0.3);
-    expect(summary.total_score).toBe(700);
+    expect(summary.total_score).toBeUndefined();
     expect(summary.duration_seconds).toBe(120);
   });
 

@@ -114,6 +114,36 @@ describe('TaskSchema', () => {
     }
   });
 
+  it('accepts a full immutable commit without defaulting a branch', () => {
+    const commit = 'ABCDEF0123456789ABCDEF0123456789ABCDEF01';
+    const result = TaskSchema.parse({
+      id: 'pinned',
+      title: 'Pinned task',
+      repo: 'https://example.com/repo.git',
+      commit,
+      verification: { type: 'command', command: 'npm test' },
+    });
+
+    expect(result.commit).toBe(commit.toLowerCase());
+    expect(result.branch).toBeUndefined();
+  });
+
+  it('rejects abbreviated commits and branch/commit combinations', () => {
+    const base = {
+      id: 'bad-pin',
+      title: 'Bad pin',
+      repo: 'https://example.com/repo.git',
+      verification: { type: 'command', command: 'npm test' },
+    };
+
+    expect(TaskSchema.safeParse({ ...base, commit: 'deadbeef' }).success).toBe(false);
+    expect(TaskSchema.safeParse({
+      ...base,
+      branch: 'main',
+      commit: 'a'.repeat(40),
+    }).success).toBe(false);
+  });
+
   it('rejects a task without explicit verification', () => {
     const result = TaskSchema.safeParse({
       id: 'unverified',

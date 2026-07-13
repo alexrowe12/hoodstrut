@@ -2,11 +2,16 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { resolve, basename } from 'node:path';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
-import { RunResultSchema, type RunResult } from '../../core/types.js';
-import { calculateScore } from '../../core/scorer.js';
+import {
+  BenchmarkSummarySchema,
+  RunResultSchema,
+  type BenchmarkAnalysis,
+  type RunResult,
+} from '../../core/types.js';
 import { generateAggregateReport } from '../../output/markdown.js';
 import { renderReportToTerminal } from '../../output/terminal.js';
 import { generateComparisonReport } from '../../output/comparison.js';
+import { analyzeBenchmark } from '../../core/benchmark-analysis.js';
 
 async function loadRunResults(resultsDir: string): Promise<RunResult[]> {
   const entries = await readdir(resultsDir, { withFileTypes: true });
@@ -31,45 +36,40 @@ async function loadRunResults(resultsDir: string): Promise<RunResult[]> {
   return results;
 }
 
-function backfillScore(result: RunResult): RunResult {
-  if (result.score !== null) {
-    return result;
+async function loadAnalysis(
+  resultsDir: string,
+  results?: RunResult[]
+): Promise<BenchmarkAnalysis | undefined> {
+  try {
+    const content = await readFile(resolve(resultsDir, 'benchmark.json'), 'utf-8');
+    const summary = BenchmarkSummarySchema.parse(JSON.parse(content));
+    if (!summary.analysis || results === undefined) return summary.analysis;
+    return analyzeBenchmark({
+      results,
+      repetitions: summary.analysis.repetitions,
+      expectedSamples: summary.analysis.expected_sample_manifest.map(sample => ({
+        runId: sample.run_id,
+        profileName: sample.profile_name,
+        taskId: sample.task_id,
+        taskTitle: sample.task_title,
+        repetition: sample.repetition,
+      })),
+      errors: summary.errors,
+    });
+  } catch {
+    return undefined;
   }
-
-  if (result.result.status && [
-    'agent_error',
-    'verification_error',
-    'judge_error',
-  ].includes(result.result.status)) {
-    return result;
-  }
-
-  const score = calculateScore({
-    success: result.result.success,
-    actualCost: result.metrics?.cost_usd ?? null,
-    duration: result.metrics?.duration_seconds ?? 0,
-    difficulty: result.task.difficulty as 'easy' | 'medium' | 'hard' | 'expert' | undefined,
-    profileModel: result.profile.model,
-  });
-
-  return { ...result, score };
 }
 
-/** Load every run in a results directory with scores backfilled where missing. */
+/** Historical name retained for API compatibility; v2 reports use raw results. */
 export async function loadScoredResults(resultsDir: string): Promise<RunResult[]> {
-  const results = await loadRunResults(resultsDir);
-  return results.map(backfillScore);
+  return loadRunResults(resultsDir);
 }
 
 export async function generateReport(resultsDir: string): Promise<string> {
   const results = await loadRunResults(resultsDir);
-
-  if (results.length === 0) {
-    return generateAggregateReport([], new Date().toISOString());
-  }
-
-  const scoredResults = results.map(backfillScore);
-  const report = generateAggregateReport(scoredResults, new Date().toISOString());
+  const analysis = await loadAnalysis(resultsDir, results);
+  const report = generateAggregateReport(results, new Date().toISOString(), analysis);
 
   const reportPath = resolve(resultsDir, 'report.md');
   await writeFile(reportPath, report, 'utf-8');
@@ -94,19 +94,23 @@ export const reportCommand = new Command('report')
           loadRunResults(absPath),
           loadRunResults(comparePath),
         ]);
+        const [analysisA, analysisB] = await Promise.all([
+          loadAnalysis(absPath, resultsA),
+          loadAnalysis(comparePath, resultsB),
+        ]);
 
-        if (resultsA.length === 0) {
+        if (resultsA.length === 0 && analysisA === undefined) {
           console.log(chalk.yellow(`No results found in ${absPath}.`));
           return;
         }
-        if (resultsB.length === 0) {
+        if (resultsB.length === 0 && analysisB === undefined) {
           console.log(chalk.yellow(`No results found in ${comparePath}.`));
           return;
         }
 
         const comparison = generateComparisonReport(
-          { label: basename(absPath), results: resultsA.map(backfillScore) },
-          { label: basename(comparePath), results: resultsB.map(backfillScore) },
+          { label: basename(absPath), results: resultsA, analysis: analysisA },
+          { label: basename(comparePath), results: resultsB, analysis: analysisB },
           new Date().toISOString()
         );
 
@@ -121,28 +125,23 @@ export const reportCommand = new Command('report')
       console.log(chalk.blue(`Scanning results in ${absPath}...`));
 
       const results = await loadRunResults(absPath);
+      const analysis = await loadAnalysis(absPath, results);
 
-      if (results.length === 0) {
+      if (results.length === 0 && analysis === undefined) {
         console.log(chalk.yellow('No results found.'));
         return;
       }
 
       console.log(chalk.blue(`Found ${results.length} run(s).`));
 
-      const scoredResults = results.map(backfillScore);
-      const needsBackfill = results.filter(r => r.score === null).length;
-      if (needsBackfill > 0) {
-        console.log(chalk.blue(`Backfilled scores for ${needsBackfill} run(s).`));
-      }
-
-      const report = generateAggregateReport(scoredResults, new Date().toISOString());
+      const report = generateAggregateReport(results, new Date().toISOString(), analysis);
 
       if (options.format === 'json') {
-        console.log(JSON.stringify(scoredResults, null, 2));
+        console.log(JSON.stringify({ analysis, results }, null, 2));
       } else {
         const reportPath = resolve(absPath, 'report.md');
         await writeFile(reportPath, report, 'utf-8');
-        console.log(renderReportToTerminal(scoredResults));
+        console.log(renderReportToTerminal(results, analysis));
         console.log(chalk.green(`Report written to ${reportPath}`));
       }
 

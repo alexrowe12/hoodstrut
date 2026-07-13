@@ -51,7 +51,11 @@ taskCommand
       console.log(chalk.bold(`Task: ${task.id}\n`));
       console.log(`Title: ${task.title}`);
       console.log(`Repository: ${task.repo}`);
-      console.log(`Branch: ${task.branch}`);
+      if (task.commit) {
+        console.log(`Commit: ${task.commit} (immutable)`);
+      } else {
+        console.log(`Branch: ${task.branch} (mutable; resolved commit is recorded per run)`);
+      }
 
       if (task.difficulty) {
         console.log(`Difficulty: ${task.difficulty}`);

@@ -2,6 +2,35 @@ import type { Profile } from '../core/types.js';
 import type { TaskWithBody } from '../core/task.js';
 import type { MetricsResult, TelemetryConfig } from '../metrics/types.js';
 
+export interface RuntimeVersions {
+  node: string;
+  npm: string;
+  git: string;
+  python: string;
+  claudeCode: string;
+  agentSdk: string;
+  os: string;
+  architecture: string;
+}
+
+export interface DockerRuntime {
+  serverVersion: string;
+  apiVersion: string;
+  os: string;
+  architecture: string;
+}
+
+export interface RunnerImage {
+  tag: string;
+  hoodstrutVersion: string;
+  buildInputsSha256: string;
+  imageId: string;
+  repoDigests: string[];
+  platform: { os: string; architecture: string };
+  versions: RuntimeVersions;
+  docker: DockerRuntime;
+}
+
 export interface ExecutorOptions {
   profile: Profile;
   task: TaskWithBody;
@@ -9,6 +38,20 @@ export interface ExecutorOptions {
   verbose?: boolean;
   timeout?: number;
   telemetry?: TelemetryConfig;
+}
+
+export interface RepositoryProvenance {
+  source: string;
+  sourceType: 'remote_git' | 'local_git' | 'local_snapshot';
+  requestedBranch?: string;
+  requestedCommit?: string;
+  resolvedCommit?: string;
+  immutable: boolean;
+  contentSha256: string;
+}
+
+export interface PreparedRepository extends RepositoryProvenance {
+  path: string;
 }
 
 export interface ExecutionResult {
@@ -41,11 +84,16 @@ export interface ExecutionResult {
     verifierOutput?: string;
   };
   metrics: MetricsResult;
+  provenance: {
+    runner: RunnerImage;
+    repository: RepositoryProvenance;
+  };
 }
 
 export interface PrepareRepoOptions {
   repo: string;
-  branch: string;
+  branch?: string;
+  commit?: string;
   destDir: string;
 }
 

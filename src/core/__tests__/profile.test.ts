@@ -119,4 +119,31 @@ describe('ProfileSchema', () => {
       expect(result.data.mcp_servers?.[0].env?.GITHUB_TOKEN).toBe('${GITHUB_TOKEN}');
     }
   });
+
+  it('supports remote MCP, max effort, and tool denial', () => {
+    const result = ProfileSchema.safeParse({
+      name: 'remote-profile', model: 'claude-opus-4-8', effort: 'max',
+      mcp_servers: [{ name: 'api', type: 'http', url: 'https://${MCP_HOST}/mcp' }],
+      settings: { disallowed_tools: ['WebFetch'] },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects unknown fields, unsafe names, duplicate assets, and contradictory MCP transports', () => {
+    expect(ProfileSchema.safeParse({
+      name: 'unsafe-skill', model: 'claude-sonnet-5',
+      skills: [{ name: '../escape', source: 'somewhere' }],
+    }).success).toBe(false);
+    expect(ProfileSchema.safeParse({
+      name: 'unknown', model: 'claude-sonnet-5', unsupported: true,
+    }).success).toBe(false);
+    expect(ProfileSchema.safeParse({
+      name: 'duplicates', model: 'claude-sonnet-5',
+      skills: [{ name: 'same', source: 'one' }, { name: 'same', source: 'two' }],
+    }).success).toBe(false);
+    expect(ProfileSchema.safeParse({
+      name: 'mixed-mcp', model: 'claude-sonnet-5',
+      mcp_servers: [{ name: 'mixed', type: 'http', url: 'https://example.test', command: 'node' }],
+    }).success).toBe(false);
+  });
 });

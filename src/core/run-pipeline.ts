@@ -2,7 +2,6 @@ import { resolve, extname } from 'node:path';
 import { mkdir, open, writeFile } from 'node:fs/promises';
 import { runContainer } from '../docker/index.js';
 import { evaluateSuccess } from './success.js';
-import { calculateScore } from './scorer.js';
 import type { TelemetryConfig } from '../metrics/types.js';
 import type { Profile, RunResult } from './types.js';
 import type { TaskWithBody } from './task.js';
@@ -25,6 +24,7 @@ export interface ExecuteRunOptions {
   profile: Profile;
   task: TaskWithBody;
   runId: string;
+  repetition?: number;
   outputDir: string;
   timeout?: number;
   verbose?: boolean;
@@ -60,7 +60,8 @@ async function readBoundedEvidence(path: string, maxBytes: number): Promise<stri
 
 /**
  * Execute a single profile/task run: container execution, success
- * evaluation, scoring, and persistence of run-result.json.
+ * evaluation and persistence of run-result.json. Benchmark-level analysis
+ * ranks correctness before efficiency; new runs do not receive additive points.
  *
  * Produces no console output, so multiple runs can execute
  * concurrently. Task failure (success=false) is a normal return;
@@ -108,21 +109,11 @@ export async function executeRun(options: ExecuteRunOptions): Promise<ExecuteRun
     warnings.push(...executionResult.metrics.warnings);
   }
 
-  const isScoredOutcome = ['passed', 'failed', 'timed_out'].includes(successResult.status);
-  const score = isScoredOutcome
-    ? calculateScore({
-        success: successResult.success,
-        actualCost: executionResult.metrics.success ? executionResult.metrics.metrics.cost_usd : null,
-        duration: executionResult.duration,
-        difficulty: task.difficulty,
-        estimatedTokens: task.estimated_tokens,
-        expectedTime: task.expected_time,
-        profileModel: profile.model,
-      })
-    : null;
+  const score = null;
 
   const runResult: RunResult = {
     id: runId,
+    repetition: options.repetition ?? 1,
     timestamp: new Date().toISOString(),
     profile: {
       name: profile.name,
@@ -160,6 +151,39 @@ export async function executeRun(options: ExecuteRunOptions): Promise<ExecuteRun
       judge_output: judgeOutput,
     },
     warnings: warnings.length > 0 ? warnings : undefined,
+    provenance: {
+      hoodstrut_version: executionResult.provenance.runner.hoodstrutVersion,
+      runner: {
+        tag: executionResult.provenance.runner.tag,
+        build_inputs_sha256: executionResult.provenance.runner.buildInputsSha256,
+        image_id: executionResult.provenance.runner.imageId,
+        repo_digests: executionResult.provenance.runner.repoDigests,
+        platform: executionResult.provenance.runner.platform,
+      },
+      repository: {
+        source: executionResult.provenance.repository.source,
+        source_type: executionResult.provenance.repository.sourceType,
+        requested_branch: executionResult.provenance.repository.requestedBranch,
+        requested_commit: executionResult.provenance.repository.requestedCommit,
+        resolved_commit: executionResult.provenance.repository.resolvedCommit,
+        immutable: executionResult.provenance.repository.immutable,
+        content_sha256: executionResult.provenance.repository.contentSha256,
+      },
+      runtime: {
+        node: executionResult.provenance.runner.versions.node,
+        npm: executionResult.provenance.runner.versions.npm,
+        git: executionResult.provenance.runner.versions.git,
+        python: executionResult.provenance.runner.versions.python,
+        claude_code: executionResult.provenance.runner.versions.claudeCode,
+        agent_sdk: executionResult.provenance.runner.versions.agentSdk,
+      },
+      docker: {
+        server_version: executionResult.provenance.runner.docker.serverVersion,
+        api_version: executionResult.provenance.runner.docker.apiVersion,
+        os: executionResult.provenance.runner.docker.os,
+        architecture: executionResult.provenance.runner.docker.architecture,
+      },
+    },
   };
 
   await writeFile(

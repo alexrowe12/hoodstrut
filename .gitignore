@@ -3,6 +3,8 @@ node_modules/
 
 # Build output
 dist/
+*.tgz
+.package-test/
 
 # IDE
 .idea/
@@ -23,7 +25,12 @@ npm-debug.log*
 
 # Results (user-generated, not tracked by default)
 results/
+otel_logs/
 
 # Environment
 .env
-.env.local
+.env.*
+!.env.example
+
+# Local agent configuration and implementation scratch files
+.claude/

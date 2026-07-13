@@ -1,21 +1,17 @@
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 
 export interface ScannedPrompt {
   content: string;
   sourcePath: string;
 }
 
-export async function scanPrompt(projectPath: string): Promise<ScannedPrompt | null> {
-  const claudeMdPath = join(projectPath, 'CLAUDE.md');
-
-  try {
-    const content = await readFile(claudeMdPath, 'utf-8');
-    return {
-      content: content.trim(),
-      sourcePath: claudeMdPath,
-    };
-  } catch {
-    return null;
+export async function scanPrompt(paths: string[]): Promise<ScannedPrompt | null> {
+  for (const path of paths) {
+    try {
+      return { content: (await readFile(path, 'utf-8')).trim(), sourcePath: path };
+    } catch {
+      // Try the next valid prompt location for this scope.
+    }
   }
+  return null;
 }

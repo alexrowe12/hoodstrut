@@ -36,6 +36,7 @@ export const benchmarkCommand = new Command('benchmark')
   .option('-p, --profiles <list>', 'Comma-separated profile names or paths')
   .option('-t, --tasks <list>', 'Comma-separated task IDs or paths')
   .option('-c, --config <file>', 'Benchmark YAML config file')
+  .option('--repetitions <count>', 'Independent runs per profile/task pair', parseInt)
   .option('--parallel <count>', 'Number of concurrent runs', parseInt)
   .option('--name <name>', 'Benchmark name')
   .option('--timeout <seconds>', 'Per-run timeout override in seconds', parseInt)
@@ -83,6 +84,7 @@ export const benchmarkCommand = new Command('benchmark')
         name: options.name ?? fileConfig?.name,
         profiles,
         tasks,
+        repetitions: options.repetitions ?? fileConfig?.repetitions,
         parallel: options.parallel ?? fileConfig?.parallel,
         timeout: options.timeout ?? fileConfig?.timeout,
         output: fileConfig?.output,
@@ -97,14 +99,17 @@ export const benchmarkCommand = new Command('benchmark')
         console.log(chalk.blue(`Telemetry: exporting to ${options.telemetry}`));
       }
 
-      const totalRuns = config.profiles.length * config.tasks.length;
-      console.log(chalk.bold(`Benchmark: ${config.name} (${config.profiles.length} profile(s) × ${config.tasks.length} task(s) = ${totalRuns} runs, parallel: ${config.parallel})`));
+      const totalRuns = config.profiles.length * config.tasks.length * config.repetitions;
+      console.log(chalk.bold(`Benchmark: ${config.name} (${config.profiles.length} profile(s) × ${config.tasks.length} task(s) × ${config.repetitions} repetition(s) = ${totalRuns} runs, parallel: ${config.parallel})`));
       console.log('');
 
       const { summary, benchmarkDir } = await runBenchmark(config, {
         telemetry,
         onProgress: (progress) => {
-          const label = `${progress.spec.profile.name} × ${progress.spec.task.id}`;
+          const repetition = config.repetitions > 1
+            ? ` [${progress.spec.repetition}/${config.repetitions}]`
+            : '';
+          const label = `${progress.spec.profile.name} × ${progress.spec.task.id}${repetition}`;
           const counter = chalk.gray(`[${progress.completed}/${progress.total}]`);
 
           if (progress.error !== undefined) {
@@ -124,8 +129,7 @@ export const benchmarkCommand = new Command('benchmark')
                 : chalk.red('✗');
           const cost = result.metrics ? formatCost(result.metrics.cost_usd) : '-';
           const duration = result.metrics ? formatDuration(result.metrics.duration_seconds) : '-';
-          const score = result.score ? `score ${result.score.value.toLocaleString()}` : 'score -';
-          console.log(`${counter} ${mark} ${label}  ${cost}  ${duration}  ${score}`);
+          console.log(`${counter} ${mark} ${label}  ${cost}  ${duration}`);
         },
       });
 
@@ -133,13 +137,13 @@ export const benchmarkCommand = new Command('benchmark')
       try {
         reportPath = await generateReport(benchmarkDir);
         const scored = await loadScoredResults(benchmarkDir);
-        console.log(renderReportToTerminal(scored));
+        console.log(renderReportToTerminal(scored, summary.analysis));
       } catch {
         // Report generation is best-effort; fall back to the plain summary below.
       }
 
       if (summary.errored_runs > 0) {
-        console.log(chalk.yellow(`  ⚠ ${summary.errored_runs} run(s) errored and are not scored above.`));
+        console.log(chalk.yellow(`  ${summary.errored_runs} run(s) errored and make affected profiles ineligible.`));
         console.log('');
       }
       console.log(chalk.dim(`  Output:  ${benchmarkDir}`));

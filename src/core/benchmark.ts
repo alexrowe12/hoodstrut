@@ -15,6 +15,7 @@ import { mapWithConcurrency } from './pool.js';
 import { buildRunnerImage } from '../docker/index.js';
 import type { TelemetryConfig } from '../metrics/types.js';
 import { ExecutionPhaseError } from '../docker/errors.js';
+import { analyzeBenchmark, type ExpectedBenchmarkSample } from './benchmark-analysis.js';
 
 export interface BenchmarkError {
   run_id: string;
@@ -50,6 +51,7 @@ export interface BenchmarkRunSpec {
   profile: Profile;
   task: TaskWithBody;
   runId: string;
+  repetition: number;
 }
 
 export interface ResolvedMatrix {
@@ -111,11 +113,17 @@ export async function buildMatrix(config: BenchmarkConfig): Promise<ResolvedMatr
   const specs: BenchmarkRunSpec[] = [];
   for (const profile of profiles) {
     for (const task of tasks) {
-      specs.push({
-        profile,
-        task,
-        runId: `run-${slugify(profile.name)}--${slugify(task.id)}`,
-      });
+      for (let repetition = 1; repetition <= config.repetitions; repetition++) {
+        const suffix = config.repetitions > 1
+          ? `--r${String(repetition).padStart(3, '0')}`
+          : '';
+        specs.push({
+          profile,
+          task,
+          repetition,
+          runId: `run-${slugify(profile.name)}--${slugify(task.id)}${suffix}`,
+        });
+      }
     }
   }
 
@@ -172,7 +180,8 @@ export function summarizeBenchmark(
   errors: BenchmarkError[],
   totalRuns: number,
   durationSeconds: number,
-  timestamp: string
+  timestamp: string,
+  expectedSamples?: ExpectedBenchmarkSample[]
 ): BenchmarkSummary {
   const successful = results.filter(r => r.result.success).length;
   const failed = results.filter(r => {
@@ -192,17 +201,29 @@ export function summarizeBenchmark(
   });
   const allErrors = [...errors, ...resultErrors];
 
+  const analysis = expectedSamples
+    ? analyzeBenchmark({
+        results,
+        repetitions: config.repetitions,
+        expectedSamples,
+        errors: allErrors,
+      })
+    : undefined;
+
   return {
     name: config.name,
     timestamp,
     config,
     duration_seconds: durationSeconds,
     total_runs: totalRuns,
-    successful_runs: successful,
-    failed_runs: failed,
-    errored_runs: allErrors.length,
-    total_cost_usd: results.reduce((sum, r) => sum + (r.metrics?.cost_usd ?? 0), 0),
-    total_score: results.reduce((sum, r) => sum + (r.score?.value ?? 0), 0),
+    successful_runs: analysis?.passed ?? successful,
+    failed_runs: analysis ? analysis.failed + analysis.timed_out : failed,
+    errored_runs: analysis?.errored ?? allErrors.length,
+    total_cost_usd: analysis
+      ? analysis.profiles.reduce((sum, profile) => sum + profile.total_cost_usd, 0)
+      : results.reduce((sum, r) => sum + (r.metrics?.cost_usd ?? 0), 0),
+    methodology: analysis?.methodology,
+    analysis,
     errors: allErrors,
   };
 }
@@ -227,6 +248,7 @@ export async function runBenchmark(
         profile: spec.profile,
         task: spec.task,
         runId: spec.runId,
+        repetition: spec.repetition,
         outputDir: join(benchmarkDir, spec.runId),
         timeout: config.timeout,
         verbose: false,
@@ -270,7 +292,14 @@ export async function runBenchmark(
     errors,
     matrix.specs.length,
     durationSeconds,
-    startedAt.toISOString()
+    startedAt.toISOString(),
+    matrix.specs.map(spec => ({
+      runId: spec.runId,
+      profileName: spec.profile.name,
+      taskId: spec.task.id,
+      taskTitle: spec.task.title,
+      repetition: spec.repetition,
+    }))
   );
 
   await writeFile(

@@ -1,11 +1,16 @@
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { scanSettings, type ScannedSettings } from './settings.js';
 import { scanMcpServers, type ScannedMcpServers } from './mcp.js';
 import { scanPrompt, type ScannedPrompt } from './prompts.js';
 import { scanSkills, type ScannedSkill } from './skills.js';
 import { scanEnvVars, type ScannedEnvVars } from './env.js';
-import { generateProfile, type GeneratedProfile } from './profile-generator.js';
+import {
+  generateProfile,
+  serializeGeneratedProfile,
+  type GeneratedProfile,
+} from './profile-generator.js';
+import { writeGeneratedProfile } from './profile-writer.js';
 
 export interface ScanOptions {
   path?: string;
@@ -13,8 +18,18 @@ export interface ScanOptions {
   name?: string;
 }
 
+export interface ScanScope {
+  type: 'user' | 'project';
+  root: string;
+  settings: { base: string; local?: string };
+  prompts: string[];
+  skills: string;
+  mcp: string;
+}
+
 export interface ScanResult {
   sourcePath: string;
+  scope: ScanScope['type'];
   settings: ScannedSettings;
   mcpServers: ScannedMcpServers;
   prompt: ScannedPrompt | null;
@@ -23,54 +38,60 @@ export interface ScanResult {
 }
 
 function expandPath(path: string): string {
-  if (path.startsWith('~')) {
-    return resolve(homedir(), path.slice(2));
-  }
+  if (path === '~') return homedir();
+  if (path.startsWith('~/')) return resolve(homedir(), path.slice(2));
   return resolve(path);
 }
 
-export async function scanClaudeConfig(options: ScanOptions = {}): Promise<ScanResult> {
-  let sourcePath: string;
-  let projectPath: string | undefined;
-
+export function resolveScanScope(options: ScanOptions = {}): ScanScope {
   if (options.project) {
-    // Scan project-local config in current directory
-    sourcePath = process.cwd();
-    projectPath = process.cwd();
-  } else if (options.path) {
-    // Scan specified path
-    sourcePath = expandPath(options.path);
-    projectPath = sourcePath;
-  } else {
-    // Default: scan global ~/.claude + current project
-    sourcePath = resolve(homedir(), '.claude');
-    projectPath = process.cwd();
+    const root = options.path ? expandPath(options.path) : process.cwd();
+    return {
+      type: 'project',
+      root,
+      settings: {
+        base: join(root, '.claude', 'settings.json'),
+        local: join(root, '.claude', 'settings.local.json'),
+      },
+      prompts: [join(root, 'CLAUDE.md'), join(root, '.claude', 'CLAUDE.md')],
+      skills: join(root, '.claude', 'skills'),
+      mcp: join(root, '.mcp.json'),
+    };
   }
 
-  const [settings, mcpServers, prompt, skills, env] = await Promise.all([
-    scanSettings(projectPath),
-    scanMcpServers(projectPath),
-    projectPath ? scanPrompt(projectPath) : Promise.resolve(null),
-    scanSkills(),
-    Promise.resolve(scanEnvVars()),
-  ]);
-
+  const root = options.path ? expandPath(options.path) : join(homedir(), '.claude');
   return {
-    sourcePath,
+    type: 'user',
+    root,
+    settings: { base: join(root, 'settings.json') },
+    prompts: [join(root, 'CLAUDE.md')],
+    skills: join(root, 'skills'),
+    mcp: join(dirname(root), '.claude.json'),
+  };
+}
+
+export async function scanClaudeConfig(options: ScanOptions = {}): Promise<ScanResult> {
+  const scope = resolveScanScope(options);
+  const [settings, mcpServers, prompt, skills] = await Promise.all([
+    scanSettings(scope.settings),
+    scanMcpServers(scope.mcp),
+    scanPrompt(scope.prompts),
+    scanSkills(scope.skills),
+  ]);
+  return {
+    sourcePath: scope.root,
+    scope: scope.type,
     settings,
     mcpServers,
     prompt,
     skills,
-    env,
+    env: scanEnvVars(),
   };
 }
 
-export async function generateProfileFromScan(
-  options: ScanOptions = {}
-): Promise<GeneratedProfile> {
+export async function generateProfileFromScan(options: ScanOptions = {}): Promise<GeneratedProfile> {
   const scanResult = await scanClaudeConfig(options);
-  const name = options.name || `scanned-${Date.now()}`;
-  return generateProfile(scanResult, name);
+  return generateProfile(scanResult, options.name || `scanned-${Date.now()}`);
 }
 
 export {
@@ -81,3 +102,5 @@ export {
   type ScannedEnvVars,
   type GeneratedProfile,
 };
+export { serializeGeneratedProfile };
+export { writeGeneratedProfile };

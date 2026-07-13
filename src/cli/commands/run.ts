@@ -10,13 +10,6 @@ import { loadDotenv } from '../../core/dotenv.js';
 import { generateReport } from './report.js';
 import type { TelemetryConfig } from '../../metrics/types.js';
 
-function formatCost(cost: number): string {
-  if (cost < 0.01) {
-    return `$${cost.toFixed(4)}`;
-  }
-  return `$${cost.toFixed(2)}`;
-}
-
 export const runCommand = new Command('run')
   .description('Execute a single profile against a single task')
   .requiredOption('-p, --profile <profile>', 'Profile name or path')
@@ -126,7 +119,7 @@ export const runCommand = new Command('run')
           console.log(chalk.yellow(`  • ${warning}`));
         }
         console.log('');
-        console.log(chalk.yellow('Token counts, cost, and scoring will not be available.'));
+        console.log(chalk.yellow('Token counts and cost will not be available.'));
         console.log(chalk.yellow('This may indicate an issue with the Agent SDK or container setup.'));
       }
 
@@ -161,17 +154,6 @@ export const runCommand = new Command('run')
 
       console.log('');
       console.log(chalk.gray(`Logs: ${outputDir}`));
-
-      const score = runResult.score;
-      if (score) {
-        console.log('');
-        console.log(chalk.bold('=== Score ==='));
-        console.log(chalk.cyan(`Score: ${score.value.toLocaleString()}`));
-        console.log(chalk.gray(`  Success: ${score.breakdown.success_bonus} pts`));
-        console.log(chalk.gray(`  Cost efficiency: ${score.breakdown.cost_score.toFixed(0)} pts (${formatCost(score.breakdown.actual_cost)} vs ${formatCost(score.breakdown.expected_cost)} expected)`));
-        console.log(chalk.gray(`  Time efficiency: ${score.breakdown.time_score.toFixed(0)} pts (${score.breakdown.actual_time}s vs ${score.breakdown.expected_time}s expected)`));
-        console.log(chalk.gray(`  Difficulty: ${score.breakdown.difficulty_multiplier}x`));
-      }
 
       const resultsDir = dirname(outputDir);
       try {

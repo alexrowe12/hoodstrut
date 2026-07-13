@@ -1,85 +1,27 @@
-import type { RunResult } from '../core/types.js';
-import { formatCost, formatPercent } from './format.js';
+import type { BenchmarkAnalysis, RunResult } from '../core/types.js';
+import { buildReportModel } from './report-model.js';
+import { formatCost, formatDuration, formatPercent } from './format.js';
 
 export interface ComparisonSide {
   label: string;
   results: RunResult[];
+  analysis?: BenchmarkAnalysis;
 }
 
-interface SideTotals {
-  runs: number;
-  successRate: number;
-  totalCost: number;
-  totalTokens: number;
-  totalScore: number;
+function signed(value: number, digits = 0): string {
+  if (value === 0) return '±0';
+  return `${value > 0 ? '+' : ''}${value.toFixed(digits)}`;
 }
 
-function calculateTotals(results: RunResult[]): SideTotals {
-  const successful = results.filter(r => r.result.success).length;
-  return {
-    runs: results.length,
-    successRate: results.length > 0 ? successful / results.length : 0,
-    totalCost: results.reduce((sum, r) => sum + (r.metrics?.cost_usd ?? 0), 0),
-    totalTokens: results.reduce((sum, r) => sum + (r.metrics?.tokens.total_tokens ?? 0), 0),
-    totalScore: results.reduce((sum, r) => sum + (r.score?.value ?? 0), 0),
-  };
+function percentPointDelta(a: number | null, b: number | null): string {
+  if (a === null || b === null) return '-';
+  return `${signed((b - a) * 100)}pp`;
 }
 
-function signed(value: number, format: (n: number) => string = n => n.toLocaleString()): string {
-  if (value === 0) {
-    return '±0';
-  }
-  return value > 0 ? `+${format(value)}` : `-${format(Math.abs(value))}`;
-}
-
-function deltaPercentPoints(a: number, b: number): string {
-  const pp = Math.round((b - a) * 100);
-  return pp === 0 ? '±0pp' : `${pp > 0 ? '+' : ''}${pp}pp`;
-}
-
-function deltaCost(a: number, b: number): string {
-  const diff = b - a;
-  if (diff === 0) {
-    return '±$0';
-  }
-  const sign = diff > 0 ? '+' : '-';
-  const pct = a > 0 ? ` (${sign}${Math.round(Math.abs(diff) / a * 100)}%)` : '';
-  return `${sign}${formatCost(Math.abs(diff))}${pct}`;
-}
-
-function successMark(result: RunResult): string {
-  return result.result.success ? '✓' : '✗';
-}
-
-function costCell(result: RunResult): string {
-  return result.metrics ? formatCost(result.metrics.cost_usd) : '-';
-}
-
-function scoreCell(result: RunResult): string {
-  return result.score ? result.score.value.toLocaleString() : '-';
-}
-
-interface ProfileAggregate {
-  runs: number;
-  successful: number;
-  totalCost: number;
-  totalScore: number;
-}
-
-function aggregateByProfile(results: RunResult[]): Map<string, ProfileAggregate> {
-  const byProfile = new Map<string, ProfileAggregate>();
-  for (const result of results) {
-    const name = result.profile.name;
-    const agg = byProfile.get(name) ?? { runs: 0, successful: 0, totalCost: 0, totalScore: 0 };
-    agg.runs++;
-    if (result.result.success) {
-      agg.successful++;
-    }
-    agg.totalCost += result.metrics?.cost_usd ?? 0;
-    agg.totalScore += result.score?.value ?? 0;
-    byProfile.set(name, agg);
-  }
-  return byProfile;
+function costDelta(a: number, b: number): string {
+  const delta = b - a;
+  if (delta === 0) return '±$0';
+  return `${delta > 0 ? '+' : '-'}${formatCost(Math.abs(delta))}`;
 }
 
 export function generateComparisonReport(
@@ -87,93 +29,76 @@ export function generateComparisonReport(
   b: ComparisonSide,
   generatedAt: string
 ): string {
-  const lines: string[] = [];
+  const modelA = buildReportModel(a.results, a.analysis);
+  const modelB = buildReportModel(b.results, b.analysis);
+  const lines = [`# Comparison: ${a.label} vs ${b.label}`, '', `Generated: ${generatedAt}`, ''];
+  const warnings: string[] = [];
 
-  lines.push(`# Comparison: ${a.label} vs ${b.label}`);
+  if (modelA.analysis.methodology !== modelB.analysis.methodology) {
+    warnings.push('Methodology versions differ; ranking conclusions are not comparable.');
+  }
+  if (modelA.analysis.repetitions !== modelB.analysis.repetitions) {
+    warnings.push(`Repetition counts differ (${modelA.analysis.repetitions} vs ${modelB.analysis.repetitions}).`);
+  }
+  const tasksA = new Set(modelA.tasks.map(task => task.id));
+  const tasksB = new Set(modelB.tasks.map(task => task.id));
+  if ([...tasksA].some(task => !tasksB.has(task)) || [...tasksB].some(task => !tasksA.has(task))) {
+    warnings.push('Task sets differ.');
+  }
+  if (modelA.analysis.missing + modelA.analysis.errored > 0
+    || modelB.analysis.missing + modelB.analysis.errored > 0) {
+    warnings.push('At least one side is incomplete; deltas are descriptive and must not be treated as a winner claim.');
+  }
+
+  if (warnings.length > 0) {
+    lines.push('## Compatibility Warnings', '', ...warnings.map(warning => `- ${warning}`), '');
+  }
+
+  lines.push('## Summary', '');
+  lines.push(`| Metric | ${a.label} | ${b.label} | Delta |`);
+  lines.push('|---|---:|---:|---:|');
+  lines.push(`| Expected samples | ${modelA.aggregate.expectedRuns} | ${modelB.aggregate.expectedRuns} | ${signed(modelB.aggregate.expectedRuns - modelA.aggregate.expectedRuns)} |`);
+  lines.push(`| Valid samples | ${modelA.aggregate.validRuns} | ${modelB.aggregate.validRuns} | ${signed(modelB.aggregate.validRuns - modelA.aggregate.validRuns)} |`);
+  lines.push(`| Passed | ${modelA.aggregate.successfulRuns} | ${modelB.aggregate.successfulRuns} | ${signed(modelB.aggregate.successfulRuns - modelA.aggregate.successfulRuns)} |`);
+  lines.push(`| Errored | ${modelA.aggregate.erroredRuns} | ${modelB.aggregate.erroredRuns} | ${signed(modelB.aggregate.erroredRuns - modelA.aggregate.erroredRuns)} |`);
+  lines.push(`| Missing | ${modelA.aggregate.missingRuns} | ${modelB.aggregate.missingRuns} | ${signed(modelB.aggregate.missingRuns - modelA.aggregate.missingRuns)} |`);
+  lines.push(`| Total cost | ${formatCost(modelA.aggregate.totalCost)} | ${formatCost(modelB.aggregate.totalCost)} | ${costDelta(modelA.aggregate.totalCost, modelB.aggregate.totalCost)} |`);
+  lines.push(`| Total duration | ${formatDuration(modelA.aggregate.totalDuration)} | ${formatDuration(modelB.aggregate.totalDuration)} | ${formatDuration(Math.abs(modelB.aggregate.totalDuration - modelA.aggregate.totalDuration))} |`);
   lines.push('');
-  lines.push(`Generated: ${generatedAt}`);
-  lines.push('');
 
-  // Summary
-  const totalsA = calculateTotals(a.results);
-  const totalsB = calculateTotals(b.results);
-
-  lines.push('## Summary');
-  lines.push('');
-  lines.push(`| Metric | ${a.label} | ${b.label} | Δ |`);
-  lines.push('|--------|------|------|---|');
-  lines.push(`| Runs | ${totalsA.runs} | ${totalsB.runs} | ${totalsA.runs === totalsB.runs ? '—' : signed(totalsB.runs - totalsA.runs)} |`);
-  lines.push(`| Success Rate | ${formatPercent(totalsA.successRate)} | ${formatPercent(totalsB.successRate)} | ${deltaPercentPoints(totalsA.successRate, totalsB.successRate)} |`);
-  lines.push(`| Total Cost | ${formatCost(totalsA.totalCost)} | ${formatCost(totalsB.totalCost)} | ${deltaCost(totalsA.totalCost, totalsB.totalCost)} |`);
-  lines.push(`| Total Tokens | ${totalsA.totalTokens.toLocaleString()} | ${totalsB.totalTokens.toLocaleString()} | ${signed(totalsB.totalTokens - totalsA.totalTokens)} |`);
-  lines.push(`| Total Score | ${totalsA.totalScore.toLocaleString()} | ${totalsB.totalScore.toLocaleString()} | ${signed(totalsB.totalScore - totalsA.totalScore)} |`);
-  lines.push('');
-
-  // By run: match on (task.id, profile.name)
-  const keyOf = (r: RunResult) => `${r.task.id}::${r.profile.name}`;
-  const mapA = new Map(a.results.map(r => [keyOf(r), r]));
-  const mapB = new Map(b.results.map(r => [keyOf(r), r]));
-  const allKeys = [...new Set([...mapA.keys(), ...mapB.keys()])].sort();
-
-  lines.push('## By Run');
-  lines.push('');
-  lines.push(`| Task | Profile | ${a.label} | ${b.label} | Cost Δ | Score Δ |`);
-  lines.push('|------|---------|------|------|--------|---------|');
-
-  for (const key of allKeys) {
-    const [taskId, profileName] = key.split('::');
-    const runA = mapA.get(key);
-    const runB = mapB.get(key);
-
-    if (runA && runB) {
-      const bothCosted = runA.metrics && runB.metrics;
-      const costDelta = bothCosted ? deltaCost(runA.metrics!.cost_usd, runB.metrics!.cost_usd) : '-';
-      const bothScored = runA.score && runB.score;
-      const scoreDelta = bothScored ? signed(runB.score!.value - runA.score!.value) : '-';
-      lines.push(`| ${taskId} | ${profileName} | ${successMark(runA)} ${costCell(runA)} (${scoreCell(runA)}) | ${successMark(runB)} ${costCell(runB)} (${scoreCell(runB)}) | ${costDelta} | ${scoreDelta} |`);
-    } else if (runA) {
-      lines.push(`| ${taskId} | ${profileName} | ${successMark(runA)} ${costCell(runA)} (${scoreCell(runA)}) | — *(only in ${a.label})* | - | - |`);
-    } else if (runB) {
-      lines.push(`| ${taskId} | ${profileName} | — *(only in ${b.label})* | ${successMark(runB)} ${costCell(runB)} (${scoreCell(runB)}) | - | - |`);
-    }
+  const profilesA = new Map(modelA.profiles.map(profile => [profile.name, profile]));
+  const profilesB = new Map(modelB.profiles.map(profile => [profile.name, profile]));
+  const profileNames = [...new Set([...profilesA.keys(), ...profilesB.keys()])].sort();
+  lines.push('## By Profile', '');
+  lines.push(`| Profile | ${a.label} | ${b.label} | Success delta | Cost/pass delta |`);
+  lines.push('|---|---|---|---:|---:|');
+  for (const name of profileNames) {
+    const left = profilesA.get(name);
+    const right = profilesB.get(name);
+    const cell = (profile: typeof left) => profile
+      ? `${profile.passed}/${profile.expected_samples} (${profile.success_rate === null ? '-' : formatPercent(profile.success_rate)}) · ${profile.cost_per_pass_usd === null ? '-' : formatCost(profile.cost_per_pass_usd)}`
+      : '-';
+    const costDeltaCell = left?.cost_per_pass_usd !== null && left?.cost_per_pass_usd !== undefined
+      && right?.cost_per_pass_usd !== null && right?.cost_per_pass_usd !== undefined
+      ? costDelta(left.cost_per_pass_usd, right.cost_per_pass_usd)
+      : '-';
+    lines.push(`| \`${name}\` | ${cell(left)} | ${cell(right)} | ${percentPointDelta(left?.success_rate ?? null, right?.success_rate ?? null)} | ${costDeltaCell} |`);
   }
   lines.push('');
-  lines.push('*Cell format: success, cost, (score)*');
-  lines.push('');
 
-  // By profile
-  const profilesA = aggregateByProfile(a.results);
-  const profilesB = aggregateByProfile(b.results);
-  const allProfiles = [...new Set([...profilesA.keys(), ...profilesB.keys()])].sort();
-
-  lines.push('## By Profile');
-  lines.push('');
-  lines.push(`| Profile | ${a.label} | ${b.label} | Success Δ | Cost Δ | Score Δ |`);
-  lines.push('|---------|------|------|-----------|--------|---------|');
-
-  for (const name of allProfiles) {
-    const aggA = profilesA.get(name);
-    const aggB = profilesB.get(name);
-
-    const cell = (agg: ProfileAggregate) =>
-      `${agg.successful}/${agg.runs} · ${formatCost(agg.totalCost)} · ${agg.totalScore.toLocaleString()}`;
-
-    if (aggA && aggB) {
-      const rateA = aggA.runs > 0 ? aggA.successful / aggA.runs : 0;
-      const rateB = aggB.runs > 0 ? aggB.successful / aggB.runs : 0;
-      lines.push(`| ${name} | ${cell(aggA)} | ${cell(aggB)} | ${deltaPercentPoints(rateA, rateB)} | ${deltaCost(aggA.totalCost, aggB.totalCost)} | ${signed(aggB.totalScore - aggA.totalScore)} |`);
-    } else if (aggA) {
-      lines.push(`| ${name} | ${cell(aggA)} | — *(only in ${a.label})* | - | - | - |`);
-    } else if (aggB) {
-      lines.push(`| ${name} | — *(only in ${b.label})* | ${cell(aggB)} | - | - | - |`);
-    }
+  const cellsA = new Map(modelA.analysis.task_profiles.map(cell => [`${cell.task_id}\0${cell.profile_name}`, cell]));
+  const cellsB = new Map(modelB.analysis.task_profiles.map(cell => [`${cell.task_id}\0${cell.profile_name}`, cell]));
+  const cellKeys = [...new Set([...cellsA.keys(), ...cellsB.keys()])].sort();
+  lines.push('## By Task And Profile', '');
+  lines.push(`| Task | Profile | ${a.label} | ${b.label} |`);
+  lines.push('|---|---|---|---|');
+  for (const key of cellKeys) {
+    const [task, profile] = key.split('\0');
+    const render = (cell: ReturnType<typeof cellsA.get>) => cell
+      ? `${cell.passed}/${cell.expected_samples} passed · ${cell.errored} error · ${cell.missing} missing`
+      : '-';
+    lines.push(`| ${task} | \`${profile}\` | ${render(cellsA.get(key))} | ${render(cellsB.get(key))} |`);
   }
-  lines.push('');
-  lines.push('*Cell format: successes/runs · cost · score*');
-  lines.push('');
-
-  lines.push('---');
-  lines.push('*Generated by hoodstrut v0.1.0*');
-
+  lines.push('', '---', '*Generated by hoodstrut v0.1.0*');
   return lines.join('\n');
 }
